@@ -1,17 +1,24 @@
-use hyper::{Client, Uri, body};
-use scraper::{Html, Selector, ElementRef};
+use hyper::{body, Client};
+use scraper::{Html, Selector};
 
 #[derive(Debug, PartialEq)]
 pub struct StoryId(u32);
 
+pub fn new_story_id(id: u32) -> StoryId {
+    StoryId(id)
+}
+
 #[derive(PartialEq, Debug)]
 pub struct ChapterNum(u16);
 
+pub fn new_chapter_number(num: u16) -> ChapterNum {
+    ChapterNum(num)
+}
 
 const FFN_BASE_URL: &str = "https://www.fanfiction.net";
 
-enum Error {
-    Http(hyper::Error)
+pub enum Error {
+    Http(hyper::Error),
 }
 
 impl From<hyper::Error> for Error {
@@ -27,12 +34,13 @@ pub struct Chapter {
     content: String,
 }
 
-
-pub async fn get_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Chapter, Error> {
+pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Chapter, Error> {
     // Still inside `async fn main`...
     let client = Client::new();
 
-    let url = format!("{}/s/{}/{}", FFN_BASE_URL, sid.0, chapter.0).parse().unwrap();
+    let url = format!("{}/s/{}/{}", FFN_BASE_URL, sid.0, chapter.0)
+        .parse()
+        .unwrap();
     let mut resp = client.get(url).await?;
 
     // TODO Add a status check
@@ -61,15 +69,14 @@ fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Chapter {
         num: chapter,
         title,
         story_name,
-        content
+        content,
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use super::*;
+    use std::path::PathBuf;
 
     fn asset(p: &str) -> String {
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -78,9 +85,9 @@ mod tests {
 
         std::fs::read_to_string(d).unwrap()
     }
-    
+
     #[test]
-    fn parse_one_chapter() {    
+    fn parse_one_chapter() {
         let ch = parse_chapter(asset("4985743_38.html"), ChapterNum(1));
 
         assert_eq!(ch.story_name, "The Path of a Jedi");
