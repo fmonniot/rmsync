@@ -1,21 +1,17 @@
-use bytes::buf::BufExt as _;
-use hyper::client::HttpConnector;
-use hyper::{Body, Request, StatusCode};
-use hyper_tls::HttpsConnector;
+use chrono::Utc;
+use hyper::StatusCode;
 use log::debug;
 use serde::Deserialize;
 use serde_json::json;
 use std::path::Path;
-use uuid::Uuid;
-use chrono::Utc;
 use tokio::prelude::*;
+use uuid::Uuid;
 
 mod archive;
 
 const DOCUMENT_LIST_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/docs";
-const DOCUMENT_UPDATE_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/upload/update-status";
 const DOCUMENT_UPLOAD_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/upload/request";
-//const DOCUMENT_DELETE_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/delete";
+const DOCUMENT_UPDATE_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/upload/update-status";
 
 #[derive(Debug)]
 pub enum Error {
@@ -24,10 +20,25 @@ pub enum Error {
     NoValidFileNameForUpload,
     FileNameIsPath,
     Archive(archive::ArchiveError),
+    Http(reqwest::Error),
+    ApiCallFailure {
+        status: StatusCode,
+        body: String,
+        api: ApiKind,
+    },
     // TODO Change to a common ApiCallFailure with an enum to discriminate the api
-    UploadRequestFailed { status: StatusCode, reason: String },
-    UploadFailed { status: StatusCode, reason: String },
-    MetadaDataUpdateFailed { status: StatusCode, reason: String },
+    UploadRequestFailed {
+        status: StatusCode,
+        reason: String,
+    },
+    UploadFailed {
+        status: StatusCode,
+        reason: String,
+    },
+    MetadaDataUpdateFailed {
+        status: StatusCode,
+        reason: String,
+    },
 }
 
 impl From<archive::ArchiveError> for Error {
@@ -36,18 +47,30 @@ impl From<archive::ArchiveError> for Error {
     }
 }
 
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        Error::Http(error)
+    }
+}
+
+#[derive(Debug)]
+pub enum ApiKind {
+    RenewToken,
+    Register,
+    ListDocuments,
+}
+
 pub struct DeviceId(String); // uuid
 pub struct Token(String);
 
 pub struct Client {
-    http: hyper::Client<HttpsConnector<HttpConnector>, Body>,
+    http: reqwest::Client,
     device_token: Option<Token>,
     user_token: Option<Token>,
 }
 
 pub fn make_client() -> Result<Client, Error> {
-    let https = hyper_tls::HttpsConnector::new();
-    let http = hyper::Client::builder().build::<_, hyper::Body>(https);
+    let http = reqwest::Client::new();
 
     let device_token = std::env::var("DEVICE_TOKEN").ok().map(Token);
 
@@ -84,6 +107,7 @@ fn validate_file_name_for_upload(file_name: &str) -> Result<(String, String), Er
 }
 
 impl Client {
+    // TODO Extract as a function which take a Client instead ?
     /// Upload a pdf/epub document to the remarkable cloud.
     ///
     /// It is required to know the document id of the folder where the file
@@ -102,7 +126,9 @@ impl Client {
         // 2. Create the remarkable archive (file format at https://remarkablewiki.com/tech/filesystem#metadata_file_format)
         let archive = archive::make(&doc_id, &ext, content)?;
 
-        let mut file = tokio::fs::File::create("/Users/francoismonniot/chapter.zip").await.unwrap();
+        let mut file = tokio::fs::File::create("/Users/francoismonniot/chapter.zip")
+            .await
+            .unwrap();
         file.write_all(&archive).await.unwrap();
 
         // 3. Send an upload request
@@ -123,24 +149,28 @@ impl Client {
         debug!("Attempt to renew user token");
         let token = self.device_token.as_ref().ok_or(Error::NoTokenAvailable)?;
 
-        let req = Request::builder()
-            .method("POST")
-            .uri("https://my.remarkable.com/token/json/2/user/new")
-            .header("Authorization", format!("Bearer {}", token.0))
-            .header("Content-Length", 0)
-            .body(Body::empty())
-            .expect("request builder");
+        let response = self
+            .http
+            .post("https://my.remarkable.com/token/json/2/user/new")
+            .bearer_auth(&token.0)
+            .header("content-length", 0) // rmcloud requires it and reqwest doesn't set it when value is 0
+            .send()
+            .await?;
 
-        let mut response = self.http.request(req).await.unwrap();
+        let status = response.status();
+        let body = response.text().await?;
 
-        // TODO Check status
+        if status.is_success() {
+            self.user_token.replace(Token(body));
 
-        let bytes = hyper::body::to_bytes(response.body_mut()).await.unwrap();
-        let token = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
-
-        self.user_token.replace(Token(token));
-
-        Ok(())
+            Ok(())
+        } else {
+            Err(Error::ApiCallFailure {
+                status,
+                body,
+                api: ApiKind::RenewToken,
+            })
+        }
     }
 
     /// If no token has been found in the initial configuration,
@@ -150,52 +180,64 @@ impl Client {
     /// As this require the user to give back a registration code,
     /// this method should not be used in an automated context.
     // TODO Manage errors correctly
-    // TODO Generate UUID instead of using a fixed (used) one
     #[allow(unused)]
     pub async fn register(&mut self, code: &str) -> Result<(), Error> {
         debug!("Attempt to register a new device code");
-        let did = "701c3752-1025-4770-af43-5ddcfa4dabb2";
+        let did = Uuid::new_v4().to_string();
 
         let payload = json!({
             "code": code,
             "deviceDesc": "desktop-windows",
             "deviceID": did,
         });
-        let payload = serde_json::to_string(&payload).unwrap();
 
-        let req = Request::builder()
-            .method("POST")
-            .uri("https://my.remarkable.com/token/json/2/device/new")
-            .body(Body::from(payload))
-            .expect("request builder");
+        let response = self
+            .http
+            .post("https://my.remarkable.com/token/json/2/device/new")
+            .json(&payload)
+            .send()
+            .await?;
 
-        let mut response = self.http.request(req).await.unwrap();
+        let status = response.status();
+        let body = response.text().await?;
 
-        let bytes = hyper::body::to_bytes(response.body_mut()).await.unwrap();
-        let token = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
+        if status.is_success() {
+            self.device_token.replace(Token(body));
 
-        self.device_token.replace(Token(token));
-
-        Ok(())
+            Ok(())
+        } else {
+            Err(Error::ApiCallFailure {
+                status,
+                body,
+                api: ApiKind::Register,
+            })
+        }
     }
 
     pub async fn list_documents(&self) -> Result<Vec<Document>, Error> {
         debug!("Listing user documents");
         let token = self.user_token.as_ref().ok_or(Error::NoTokenAvailable)?;
 
-        let req = Request::builder()
-            .method("GET")
-            .uri(DOCUMENT_LIST_URL)
-            .header("Authorization", format!("Bearer {}", token.0))
-            .body(Body::empty())
-            .expect("request builder");
+        let response = self
+            .http
+            .get(DOCUMENT_LIST_URL)
+            .bearer_auth(&token.0)
+            .send()
+            .await?;
 
-        let response = self.http.request(req).await.unwrap();
+        let status = response.status();
 
-        let body = hyper::body::aggregate(response).await.unwrap();
-        let documents: Vec<Document> = serde_json::from_reader(body.reader()).unwrap();
+        if status.is_success() {
+            Ok(response.json().await?)
+        } else {
+            let body = response.text().await?;
 
-        Ok(documents)
+            Err(Error::ApiCallFailure {
+                status,
+                body,
+                api: ApiKind::ListDocuments,
+            })
+        }
     }
 
     async fn upload_request(
@@ -211,30 +253,25 @@ impl Client {
             "Type": entry_type.as_str(),
             "Version": 1 // We only support new documents for now
         }]);
-        let payload = serde_json::to_string(&payload).unwrap();
 
-        let req = Request::builder()
-            .method("PUT")
-            .uri(DOCUMENT_UPLOAD_URL)
-            .header("Authorization", format!("Bearer {}", token.0))
-            .body(Body::from(payload))
-            .expect("request builder");
+        let response = self
+            .http
+            .put(DOCUMENT_UPLOAD_URL)
+            .header("User-Agent", "rmsync")
+            .bearer_auth(&token.0)
+            .json(&payload)
+            .send()
+            .await?;
 
-        let response = self.http.request(req).await.unwrap();
         let status = response.status();
 
-        debug!("upload_request:response.status={}", status);
-
         if status.is_success() {
-            let body = hyper::body::aggregate(response).await.unwrap();
-            let response = serde_json::from_reader(body.reader()).unwrap();
+            let body = response.json().await?;
+            debug!("upload_request:response.body={:#?}", body);
 
-            debug!("upload_request:response.body={:#?}", response);
-
-            Ok(response)
+            Ok(body)
         } else {
-            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let reason = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
+            let reason = response.text().await?;
 
             Err(Error::UploadRequestFailed { status, reason })
         }
@@ -242,36 +279,27 @@ impl Client {
 
     async fn upload_archive(&self, url: &str, archive: Vec<u8>) -> Result<(), Error> {
         debug!("Uploading archive to the reMarkable cloud");
-        let token = self.user_token.as_ref().ok_or(Error::NoTokenAvailable)?;
-
-        let req = Request::builder()
-            .method("PUT")
-            .uri(url)
-            .header("Authorization", format!("Bearer {}", token.0))
+        
+        // No need for authentication here as its already part of the url
+        let response = self
+            .http
+            .put(url)
             .header("User-Agent", "rmsync")
-            .header("Accept-Encoding", "gzip")
-            .header("Content-Length", archive.len())
-            .body(Body::from(archive))
-            .expect("request builder");
+            .body(archive)
+            .send()
+            .await?;
 
-        let response = self.http.request(req).await.unwrap();
         let status = response.status();
+        let headers = response.headers().clone();
+        let reason = response.text().await?;
 
         debug!("upload_archive:response.status={}", status);
+        debug!("upload_archive:response.body='{}'", reason);
+        debug!("upload_archive:response.headers='{:?}'", headers);
 
         if status.is_success() {
-            let headers = response.headers();
-            debug!("upload_archive:response.headers='{:?}'", headers);
-
-            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let content = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
-            debug!("upload_archive:response.body='{}'", content);
-
             Ok(())
         } else {
-            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let reason = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
-
             Err(Error::UploadFailed { status, reason })
         }
     }
@@ -294,31 +322,25 @@ impl Client {
             "Version":        1,
             "ModifiedClient": Utc::now().to_rfc3339(),
         });
-        let payload = serde_json::to_string(&payload).unwrap();
-        debug!("update_metadata:request.body={}", payload);
 
-        let req = Request::builder()
-            .method("PUT")
-            .uri(DOCUMENT_UPDATE_URL)
-            .header("Authorization", format!("Bearer {}", token.0))
-            .body(Body::from(payload))
-            .expect("request builder");
+        let response = self
+            .http
+            .put(DOCUMENT_UPDATE_URL)
+            .header("User-Agent", "rmsync")
+            .bearer_auth(&token.0)
+            .json(&payload)
+            .send()
+            .await?;
 
-        let response = self.http.request(req).await.unwrap();
         let status = response.status();
+        let reason = response.text().await?;
 
-        debug!("update_metadata:response.status={}", status);
+        debug!("upload_request:response.status={:?}", status);
+        debug!("upload_request:response.body={:#?}", reason);
 
         if status.is_success() {
-            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let content = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
-
-            debug!("update_metadata:response.body='{}'", content);
             Ok(())
         } else {
-            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
-            let reason = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
-
             Err(Error::MetadaDataUpdateFailed { status, reason })
         }
     }

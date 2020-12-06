@@ -74,7 +74,15 @@ async fn convert(_notification: Notification) -> Result<(), Error> {
     // how (or if) can I cache this result (speed up, rmcloud usage, gcp costs, etc…)
     //
     let documents = rm_cloud.list_documents().await?;
-    let documents = documents.iter().map(|d| format!("Document(name:'{}', type:{}, {:?})", d.visible_name, d.tpe, d.id)).collect::<Vec<_>>();
+    let documents = documents
+        .iter()
+        .map(|d| {
+            format!(
+                "Document(name:'{}', type:{}, {:?})",
+                d.visible_name, d.tpe, d.id
+            )
+        })
+        .collect::<Vec<_>>();
     println!("Documents: {:#?}", documents);
 
     Ok(())
