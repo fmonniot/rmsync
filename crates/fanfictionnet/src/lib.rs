@@ -1,8 +1,8 @@
+use ego_tree::NodeRef;
 use hyper::{body, Client};
-use scraper::{Html, Selector, Node};
 use hyper_tls::HttpsConnector;
 use log::warn;
-use ego_tree::NodeRef;
+use scraper::{Html, Node, Selector};
 
 #[derive(Debug, PartialEq)]
 pub struct StoryId(u32);

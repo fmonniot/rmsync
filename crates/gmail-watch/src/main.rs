@@ -61,7 +61,12 @@ async fn convert(_notification: Notification) -> Result<(), Error> {
     let mut file = tokio::fs::File::create("/Users/francoismonniot/chapter.epub").await?;
     file.write_all(&epub).await?;
 
-    let rm_cloud = rmcloud::make_client()?;
+    let mut rm_cloud = rmcloud::make_client()?;
+
+    rm_cloud.renew_token().await?;
+    let documents = rm_cloud.list_documents().await?;
+
+    println!("Documents: {:#?}", documents);
 
     rm_cloud.upload().await?;
 
@@ -75,12 +80,15 @@ async fn fetch_mail_content() -> Result<(), Error> {
 async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
     let mut buffer = Vec::new();
 
-    let content = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+    let content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <body>
 {}
 </body>
-</html>"#, chapter.content());
+</html>"#,
+        chapter.content()
+    );
 
     EpubBuilder::new(ZipLibrary::new()?)?
         // Set some metadata
@@ -103,9 +111,9 @@ async fn http_handler(_: Request<Body>) -> Result<Response<Body>, Infallible> {
     match convert(notificaton).await {
         Ok(()) => Ok(Response::builder().status(200).body(Body::empty()).unwrap()),
         Err(e) => {
-            error!("Error while handling email: {:?}", e);    
+            error!("Error while handling email: {:?}", e);
             Ok(Response::builder().status(500).body(Body::empty()).unwrap())
-        },
+        }
     }
 }
 
