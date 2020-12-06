@@ -11,9 +11,18 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::{error, info};
 use rmcloud::DocumentId;
-use tokio::prelude::*;
+use log::warn;
+use serde::Deserialize;
 
-struct Notification;
+// {"emailAddress": "user@example.com", "historyId": "9876543210"}
+#[derive(Debug, Deserialize)]
+struct Notification {
+    #[serde(rename = "emailAddress")]
+    email_address: String,
+
+    #[serde(rename = "historyId")]
+    history_id: String,
+}
 
 #[derive(Debug)]
 enum Error {
@@ -116,11 +125,84 @@ async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
     Ok(buffer)
 }
 
-/// Handle the interface between the HTTP transport and the business functions
-async fn http_handler(_: Request<Body>) -> Result<Response<Body>, Infallible> {
-    let notificaton: Notification = Notification; // TODO
+/// Google Pub/Sub will wrap the actual message within some metadata information.
+/// This module offer a simple `deserialize` method to extract the actual payload
+/// from the metadata.
+///
+///
+/// Example of a message received via Pub/Sub, notice how the actual content is
+/// within the `data` field :
+///    ```json
+///    {
+///        message:
+///        {
+///          // This is the actual notification data, as base64url-encoded JSON.
+///          data: "eyJlbWFpbEFkZHJlc3MiOiAidXNlckBleGFtcGxlLmNvbSIsICJoaXN0b3J5SWQiOiAiMTIzNDU2Nzg5MCJ9",
+///      
+///          // This is a Cloud Pub/Sub message id, unrelated to Gmail messages.
+///          message_id: "1234567890",
+///        }
+///      
+///        subscription: "projects/myproject/subscriptions/mysubscription"
+///      }
+///    ```
+mod pubsub {
+    use serde::{Deserialize, de::DeserializeOwned};
+    use bytes::Buf;
+    use bytes::buf::{BufExt as _};
 
-    match convert(notificaton).await {
+    #[derive(Debug)]
+    pub enum Error {
+        Json(serde_json::Error),
+        Base64(base64::DecodeError),
+    }
+
+    impl From<serde_json::Error> for Error {
+        fn from(error: serde_json::Error) -> Self {
+            Error::Json(error)
+        }
+    }
+
+    impl From<base64::DecodeError> for Error {
+        fn from(error: base64::DecodeError) -> Self {
+            Error::Base64(error)
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Envelope {
+        message: Message,
+        subscription: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Message {
+        data: String,
+        message_id: String,
+    }
+
+    pub fn deserialize<T: DeserializeOwned, B : Buf>(buf: B) -> Result<T, Error> {
+        let envelope: Envelope = serde_json::from_reader(buf.reader())?;
+        let data = base64::decode(envelope.message.data)?;
+
+        Ok(serde_json::from_slice(&data)?)
+    }
+}
+
+/// Handle the interface between the HTTP transport and the business functions
+async fn http_handler(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+     // Read the body as a JSON notification
+     let whole_body = hyper::body::aggregate(req).await.expect("Can't read request body");
+     let notification = match pubsub::deserialize(whole_body) {
+         Ok(data) => data,
+         Err(error) => {
+             let req_id = uuid::Uuid::new_v4().to_string();
+             warn!("Can't the read the request body because of error: {:?} (Req-Id: {})", error, req_id);
+             return Ok(Response::builder().status(400).body(format!("{{\"request-id\":\"{}\"}}", req_id).into()).unwrap());
+         }
+     };
+
+    match convert(notification).await {
         Ok(()) => Ok(Response::builder().status(200).body(Body::empty()).unwrap()),
         Err(e) => {
             error!("Error while handling email: {:?}", e);

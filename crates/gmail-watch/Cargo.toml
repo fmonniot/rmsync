@@ -14,3 +14,8 @@ log = "0.4"
 fanfictionnet = { path = "../fanfictionnet" }
 rmcloud = { path = "../rmcloud" }
 epub-builder = { version = "0.4", features = [ "zip-library" ] }
+serde_json = "1.0"
+bytes = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+uuid = { version = "0.8", features = ["v4"] }
+base64 = "0.13"
