@@ -1,4 +1,4 @@
-#![deny(warnings)]
+//#![deny(warnings)]
 
 use std::convert::Infallible;
 
@@ -10,6 +10,7 @@ use fanfictionnet::Chapter;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::{error, info};
+use rmcloud::DocumentId;
 use tokio::prelude::*;
 
 struct Notification;
@@ -64,11 +65,17 @@ async fn convert(_notification: Notification) -> Result<(), Error> {
     let mut rm_cloud = rmcloud::make_client()?;
 
     rm_cloud.renew_token().await?;
+
+    rm_cloud
+        .upload_epub(&epub, "chapter 2.epub", DocumentId::empty())
+        .await?;
+
+    // TODO Evaluate if listing all documents before upload is necessary, and if it is,
+    // how (or if) can I cache this result (speed up, rmcloud usage, gcp costs, etc…)
+    //
     let documents = rm_cloud.list_documents().await?;
-
+    let documents = documents.iter().map(|d| format!("Document(name:'{}', type:{}, {:?})", d.visible_name, d.tpe, d.id)).collect::<Vec<_>>();
     println!("Documents: {:#?}", documents);
-
-    rm_cloud.upload().await?;
 
     Ok(())
 }
