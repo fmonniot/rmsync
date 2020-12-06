@@ -314,14 +314,14 @@ impl Client {
         debug!("Creating metadata for document id {}", doc_id.0);
 
         let token = self.user_token.as_ref().ok_or(Error::NoTokenAvailable)?;
-        let payload = json!({
+        let payload = json!([{
             "ID":             doc_id.0,
             "Parent":         parent.0,
             "VissibleName":   name,
             "Type":           entry_type.as_str(),
             "Version":        1,
-        });
             "ModifiedClient": Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
+        }]);
 
         let response = self
             .http
