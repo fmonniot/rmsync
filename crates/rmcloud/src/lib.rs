@@ -4,7 +4,6 @@ use log::debug;
 use serde::Deserialize;
 use serde_json::json;
 use std::path::Path;
-use tokio::prelude::*;
 use uuid::Uuid;
 
 mod archive;
@@ -125,11 +124,6 @@ impl Client {
 
         // 2. Create the remarkable archive (file format at https://remarkablewiki.com/tech/filesystem#metadata_file_format)
         let archive = archive::make(&doc_id, &ext, content)?;
-
-        let mut file = tokio::fs::File::create("/Users/francoismonniot/chapter.zip")
-            .await
-            .unwrap();
-        file.write_all(&archive).await.unwrap();
 
         // 3. Send an upload request
         let uploads = self.upload_request(&doc_id, EntryType::Document).await?;
