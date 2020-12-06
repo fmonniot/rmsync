@@ -56,18 +56,15 @@ async fn convert(_notification: Notification) -> Result<(), Error> {
 
     let chapter = fanfictionnet::fetch_story_chapter(sid, chapter).await?;
 
+    let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
     let epub = make_epub(chapter).await?;
-
-    // Temporarily, until the rmcloud client is correctly working
-    let mut file = tokio::fs::File::create("/Users/francoismonniot/chapter.epub").await?;
-    file.write_all(&epub).await?;
 
     let mut rm_cloud = rmcloud::make_client()?;
 
     rm_cloud.renew_token().await?;
 
     rm_cloud
-        .upload_epub(&epub, "chapter 2.epub", DocumentId::empty())
+        .upload_epub(&epub, &file_name, DocumentId::empty())
         .await?;
 
     // TODO Evaluate if listing all documents before upload is necessary, and if it is,

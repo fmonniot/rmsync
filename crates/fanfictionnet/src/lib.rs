@@ -14,6 +14,12 @@ pub fn new_story_id(id: u32) -> StoryId {
 #[derive(PartialEq, Debug, Copy, Clone)]
 pub struct ChapterNum(u16);
 
+impl std::fmt::Display for ChapterNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 pub fn new_chapter_number(num: u16) -> ChapterNum {
     ChapterNum(num)
 }
