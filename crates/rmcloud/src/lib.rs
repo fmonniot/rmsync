@@ -1,3 +1,5 @@
+
+#[derive(Debug)]
 pub enum Error {}
 
 pub struct Client;

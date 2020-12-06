@@ -9,7 +9,8 @@ edition = "2018"
 [dependencies]
 hyper = "0.13.9"
 pretty_env_logger = "0.2.3"
-tokio = { version = "0.2", features = ["macros"] }
+tokio = { version = "0.2", features = ["macros", "fs"] }
 log = "0.4"
 fanfictionnet = { path = "../fanfictionnet" }
 rmcloud = { path = "../rmcloud" }
+epub-builder = { version = "0.4", features = [ "zip-library" ] }
