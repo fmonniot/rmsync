@@ -74,15 +74,15 @@ pub(crate) fn make(
                 "LastFinelinerv2Size": "1"
             },
             "fileType": ext,
-            "fontName": "",
+            "fontName": "EB Garamond",
             "lastOpenedPage": 0,
-            "lineHeight": -1,
-            "margins": 100,
-            "orientation": "", // portrait
+            "lineHeight": 100,
+            "margins": 50,
+            "orientation": "portrait",
             "pageCount": 0,
             "pages": null,
-            //"textAlignment": "left",
-            "textScale": 1,
+            "textAlignment": "justify",
+            "textScale": 1.2,
             "transform": {
                 "m11": 1,
                 "m12": 0,
