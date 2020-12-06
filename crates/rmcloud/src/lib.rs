@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use hyper::StatusCode;
 use log::debug;
 use serde::Deserialize;
@@ -279,7 +279,7 @@ impl Client {
 
     async fn upload_archive(&self, url: &str, archive: Vec<u8>) -> Result<(), Error> {
         debug!("Uploading archive to the reMarkable cloud");
-        
+
         // No need for authentication here as its already part of the url
         let response = self
             .http
@@ -320,8 +320,8 @@ impl Client {
             "VissibleName":   name,
             "Type":           entry_type.as_str(),
             "Version":        1,
-            "ModifiedClient": Utc::now().to_rfc3339(),
         });
+            "ModifiedClient": Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
 
         let response = self
             .http
