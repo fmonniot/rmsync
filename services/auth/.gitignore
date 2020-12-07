@@ -1,2 +1,4 @@
 # Make sure I cannot inadvertly expose credentials from that file
 env_vars.yaml
+
+node_modules/
