@@ -14,6 +14,8 @@ use rmcloud::DocumentId;
 use log::warn;
 use serde::Deserialize;
 
+mod tokens;
+
 // {"emailAddress": "user@example.com", "historyId": "9876543210"}
 #[derive(Debug, Deserialize)]
 struct Notification {

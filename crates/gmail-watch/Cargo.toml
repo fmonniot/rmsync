@@ -19,3 +19,7 @@ bytes = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 uuid = { version = "0.8", features = ["v4"] }
 base64 = "0.13"
+google-gmail1 = "1.0"
+sodiumoxide = "0.2"
+sha2 = "0.9"
+hex = "0.4"
