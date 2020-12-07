@@ -8,6 +8,10 @@ At some point in the future, this project will likely be rewritten in rust.
 Take care to not commit the `env_vars.yaml` file with credentials in it. By default git will
 ignore this file (you'll have to create it from `env_vars.yaml.default`).
 
+Instruction to setup the GCP side of things available [on this codelab](https://codelabs.developers.google.com/codelabs/intelligent-gmail-processing#0).
+
+TODO: Copy what I needed to do in this repo instead of relying on a Google resource (which may or may not be taken down in the future).
+
 ## Deployment
 
 Assuming the Google Cloud SDK is installed, configured and pointing to the desired project.
