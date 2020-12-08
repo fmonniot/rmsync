@@ -13,6 +13,7 @@ use log::warn;
 use log::{debug, error, info};
 use rmcloud::DocumentId;
 use serde::Deserialize;
+use std::sync::Arc;
 
 mod gcp;
 mod tokens;
@@ -78,18 +79,16 @@ impl From<tokens::TokenError> for Error {
 // instead of creating new one every time.
 // Definitively an optimization though.
 
-async fn convert(notification: Notification) -> Result<(), Error> {
+async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<(), Error> {
     info!("Received notification {:?}", notification);
 
-    let gcp = gcp::make_client("rmsync".to_string()).await?;
-    let result = gcp
+    let result = cfg.gcp
         .cloud_datastore_user_by_email(&notification.email_address)
         .await?;
 
     let mut user_token = match result {
         gcp::DatastoreLookup::Found { token } => {
-            let crypto = tokens::Cryptographer::from_env().unwrap();
-            tokens::UserToken::from_encrypted_blob(&crypto, &token)?
+            tokens::UserToken::from_encrypted_blob(&cfg.crypto, &token)?
         }
         _ => {
             todo!("return an error")
@@ -97,9 +96,9 @@ async fn convert(notification: Notification) -> Result<(), Error> {
     };
 
     // Might be skippable within the first hours after login, but otherwise always required
-    gcp.refresh_user_token(&mut user_token).await?;
+    cfg.gcp.refresh_user_token(&mut user_token).await?;
 
-    let history = gcp
+    let history = cfg.gcp
         .gmail_users_history_list(&user_token, notification.history_id)
         .await?;
 
@@ -240,7 +239,7 @@ mod pubsub {
 }
 
 /// Handle the interface between the HTTP transport and the business functions
-async fn http_handler(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn http_handler(req: Request<Body>, cfg: Arc<Configuration>) -> Result<Response<Body>, Infallible> {
     // Read the body as a JSON notification
     let whole_body = hyper::body::aggregate(req)
         .await
@@ -261,7 +260,7 @@ async fn http_handler(req: Request<Body>) -> Result<Response<Body>, Infallible> 
         }
     };
 
-    match convert(notification).await {
+    match convert(notification, cfg).await {
         Ok(()) => Ok(Response::builder().status(200).body(Body::empty()).unwrap()),
         Err(e) => {
             error!("Error while handling email: {:?}", e);
@@ -274,21 +273,27 @@ async fn http_handler(req: Request<Body>) -> Result<Response<Body>, Infallible> 
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pretty_env_logger::init();
 
+    let configuration = Arc::new(Configuration::from_env().await?);
+
     // For every connection, we must make a `Service` to handle all
     // incoming HTTP requests on said connection.
     let make_svc = make_service_fn(|_conn| {
+        let configuration = Arc::clone(&configuration);
+
+
         // This is the `Service` that will handle the connection.
         // `service_fn` is a helper to convert a function that
         // returns a Response into a `Service`.
-        async { Ok::<_, Infallible>(service_fn(http_handler)) }
+        async move { 
+            Ok::<_, Infallible>(service_fn(move |req| {
+                let configuration = Arc::clone(&configuration);
+
+                http_handler(req, configuration)
+            }))
+         }
     });
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
-    let addr = ([127, 0, 0, 1], port).into();
-
+    let addr = ([127, 0, 0, 1], configuration.port).into();
     let server = Server::bind(&addr).serve(make_svc);
 
     info!("Listening on http://{}", addr);
@@ -296,4 +301,30 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     server.await?;
 
     Ok(())
+}
+
+struct Configuration {
+    port: u16,
+    gcp: gcp::GcpClient,
+    crypto: tokens::Cryptographer,
+}
+
+impl Configuration {
+    async fn from_env() -> Result<Configuration, Box<dyn std::error::Error + Send + Sync>> {
+        let google_client_id = std::env::var("GOOGLE_CLIENT_ID")?;
+        let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
+        let project_id = std::env::var("GCP_PROJECT")?;
+        
+        let port: u16 = std::env::var("PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8080);
+
+        let gcp = gcp::make_client(project_id.clone(), google_client_id.clone(), google_client_secret.clone()).await?;
+        let crypto = tokens::Cryptographer::new(&google_client_secret)?;
+
+        Ok(Configuration {
+            port, gcp, crypto
+        })
+    }
 }

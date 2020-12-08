@@ -59,18 +59,26 @@ impl UserToken {
 pub enum CryptoError {
     Base64(base64::DecodeError),
     Decryption,
-    EnvVar(std::env::VarError),
-}
-
-impl From<std::env::VarError> for CryptoError {
-    fn from(e: std::env::VarError) -> Self {
-        CryptoError::EnvVar(e)
-    }
 }
 
 impl From<base64::DecodeError> for CryptoError {
     fn from(e: base64::DecodeError) -> Self {
         CryptoError::Base64(e)
+    }
+}
+
+
+// TODO See if it's still needed with thiserror or anyhow
+impl std::fmt::Display for CryptoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SuperError is here!")
+    }
+}
+
+// TODO See if it's still needed with thiserror or anyhow
+impl std::error::Error for CryptoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
     }
 }
 
@@ -83,11 +91,6 @@ const NONCE_LENGTH: usize = 24;
 use sodiumoxide::crypto::secretbox::{self, Key, Nonce};
 
 impl Cryptographer {
-    pub fn from_env() -> Result<Cryptographer, CryptoError> {
-        let key = std::env::var("CRYPTO_KEY")?;
-
-        Cryptographer::new(&key)
-    }
 
     pub fn new(key: &str) -> Result<Cryptographer, CryptoError> {
         let key_bytes = key_to_bytes(key)?;

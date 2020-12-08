@@ -1,10 +1,11 @@
 use crate::tokens::UserToken;
-use gcp_auth::{AuthenticationManager, Token};
+use gcp_auth::Token;
 use log::debug;
 use serde::Deserialize;
 use serde_json::json;
 
-pub async fn make_client(project_id: String) -> Result<GcpClient, Error> {
+// TODO It'd be nice to share the AuthenticationManager and reqwest::Client between connections
+pub async fn make_client(project_id: String, client_id: String, client_secret: String) -> Result<GcpClient, Error> {
     let authentication_manager = gcp_auth::init().await?;
     let token = authentication_manager
         .get_token(&["https://www.googleapis.com/auth/datastore"])
@@ -13,7 +14,7 @@ pub async fn make_client(project_id: String) -> Result<GcpClient, Error> {
 
     Ok(GcpClient {
         project_id,
-        authentication_manager,
+        client_id,client_secret,
         token,
         http,
     })
@@ -26,6 +27,20 @@ pub enum Error {
     GcpAuth(gcp_auth::Error),
 
     InvalidDatastoreContent(String),
+}
+
+// TODO See if it's still needed with thiserror or anyhow
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SuperError is here!")
+    }
+}
+
+// TODO See if it's still needed with thiserror or anyhow
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
 }
 
 impl From<serde_json::Error> for Error {
@@ -48,8 +63,8 @@ impl From<gcp_auth::Error> for Error {
 
 pub struct GcpClient {
     project_id: String,
-    #[allow(unused)] // TODO Do we need it here ? Depends on how we share this across calls
-    authentication_manager: AuthenticationManager,
+    client_id: String,
+    client_secret: String,
     token: Token,
     http: reqwest::Client,
 }
@@ -114,8 +129,11 @@ impl GcpClient {
         debug!("Refreshing user token");
 
         let mut form = std::collections::HashMap::new();
-        form.insert("client_id", "");
-        form.insert("client_secret", "");
+        form.insert(
+            "client_id",
+            self.client_id.as_str(),
+        );
+        form.insert("client_secret", self.client_secret.as_str());
         form.insert("grant_type", "refresh_token");
         form.insert("refresh_token", token.refresh_token());
 
