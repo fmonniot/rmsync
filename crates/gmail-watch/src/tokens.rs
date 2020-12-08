@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+#[derive(Debug)]
 pub enum TokenError {
     Crypto(CryptoError),
     Json(serde_json::Error),
@@ -25,7 +26,7 @@ pub struct UserToken {
     scope: String,
     token_type: String,
     id_token: String,
-    expiry_date: u32,
+    expiry_date: u64,
 }
 
 impl UserToken {
