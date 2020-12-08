@@ -23,7 +23,7 @@ impl From<serde_json::Error> for TokenError {
 pub struct UserToken {
     access_token: String,
     refresh_token: String,
-    scope: String,
+    pub scope: String,
     token_type: String,
     id_token: String,
     expiry_date: u64,
@@ -67,7 +67,6 @@ impl From<base64::DecodeError> for CryptoError {
     }
 }
 
-
 // TODO See if it's still needed with thiserror or anyhow
 impl std::fmt::Display for CryptoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,7 +90,6 @@ const NONCE_LENGTH: usize = 24;
 use sodiumoxide::crypto::secretbox::{self, Key, Nonce};
 
 impl Cryptographer {
-
     pub fn new(key: &str) -> Result<Cryptographer, CryptoError> {
         let key_bytes = key_to_bytes(key)?;
         let key = Key::from_slice(&key_bytes).expect("can't create key");

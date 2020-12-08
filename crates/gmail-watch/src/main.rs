@@ -7,10 +7,11 @@ use epub_builder::EpubContent;
 use epub_builder::ReferenceType;
 use epub_builder::ZipLibrary;
 use fanfictionnet::Chapter;
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
-use log::{debug, error, info};
+use log::{error, info};
 use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -82,7 +83,8 @@ impl From<tokens::TokenError> for Error {
 async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<(), Error> {
     info!("Received notification {:?}", notification);
 
-    let result = cfg.gcp
+    let result = cfg
+        .gcp
         .cloud_datastore_user_by_email(&notification.email_address)
         .await?;
 
@@ -98,9 +100,32 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
     // Might be skippable within the first hours after login, but otherwise always required
     cfg.gcp.refresh_user_token(&mut user_token).await?;
 
-    let history = cfg.gcp
+    let history = cfg
+        .gcp
         .gmail_users_history_list(&user_token, notification.history_id)
         .await?;
+
+    info!("Will fetch {} emails", history.len());
+
+    // TODO I might not want to make all the calls at once and race them
+    // TODO Or I might implement the batching APIs (if I can understand them, geez Google make everything complicated…)
+    // Fetch all emails in parallel
+    let futures: FuturesUnordered<_> = history
+        .iter()
+        .map(|h| cfg.gcp.gmail_get_message(h))
+        .collect();
+    let email_results: Vec<_> = futures.collect().await;
+
+    // Keep the successes and discards the failures (with a warn)
+    let mut emails = Vec::new();
+    for r in email_results {
+        match r {
+            Ok(e) => emails.push(e),
+            Err(e) => warn!("Couldn't fetch email. Error = {:?}", e),
+        }
+    }
+
+    println!("fetched emails: {:#?}", emails);
 
     let _ = fetch_mail_content().await?;
 
@@ -195,6 +220,8 @@ async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
 ///        subscription: "projects/myproject/subscriptions/mysubscription"
 ///      }
 ///    ```
+///
+/// https://developers.google.com/gmail/api/guides/push?hl=en
 mod pubsub {
     use bytes::buf::BufExt as _;
     use bytes::Buf;
@@ -239,7 +266,10 @@ mod pubsub {
 }
 
 /// Handle the interface between the HTTP transport and the business functions
-async fn http_handler(req: Request<Body>, cfg: Arc<Configuration>) -> Result<Response<Body>, Infallible> {
+async fn http_handler(
+    req: Request<Body>,
+    cfg: Arc<Configuration>,
+) -> Result<Response<Body>, Infallible> {
     // Read the body as a JSON notification
     let whole_body = hyper::body::aggregate(req)
         .await
@@ -280,17 +310,16 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let make_svc = make_service_fn(|_conn| {
         let configuration = Arc::clone(&configuration);
 
-
         // This is the `Service` that will handle the connection.
         // `service_fn` is a helper to convert a function that
         // returns a Response into a `Service`.
-        async move { 
+        async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let configuration = Arc::clone(&configuration);
 
                 http_handler(req, configuration)
             }))
-         }
+        }
     });
 
     let addr = ([127, 0, 0, 1], configuration.port).into();
@@ -314,17 +343,20 @@ impl Configuration {
         let google_client_id = std::env::var("GOOGLE_CLIENT_ID")?;
         let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
         let project_id = std::env::var("GCP_PROJECT")?;
-        
+
         let port: u16 = std::env::var("PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(8080);
 
-        let gcp = gcp::make_client(project_id.clone(), google_client_id.clone(), google_client_secret.clone()).await?;
+        let gcp = gcp::make_client(
+            project_id.clone(),
+            google_client_id.clone(),
+            google_client_secret.clone(),
+        )
+        .await?;
         let crypto = tokens::Cryptographer::new(&google_client_secret)?;
 
-        Ok(Configuration {
-            port, gcp, crypto
-        })
+        Ok(Configuration { port, gcp, crypto })
     }
 }

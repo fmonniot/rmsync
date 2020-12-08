@@ -25,3 +25,4 @@ sha2 = "0.9"
 hex = "0.4"
 gcp_auth = "0.3"
 reqwest = { version = "0.10", features = ["json", "gzip"] }
+futures = "0.3"

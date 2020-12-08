@@ -1,11 +1,15 @@
 use crate::tokens::UserToken;
 use gcp_auth::Token;
-use log::debug;
+use log::{debug, warn};
 use serde::Deserialize;
 use serde_json::json;
 
 // TODO It'd be nice to share the AuthenticationManager and reqwest::Client between connections
-pub async fn make_client(project_id: String, client_id: String, client_secret: String) -> Result<GcpClient, Error> {
+pub async fn make_client(
+    project_id: String,
+    client_id: String,
+    client_secret: String,
+) -> Result<GcpClient, Error> {
     let authentication_manager = gcp_auth::init().await?;
     let token = authentication_manager
         .get_token(&["https://www.googleapis.com/auth/datastore"])
@@ -14,7 +18,8 @@ pub async fn make_client(project_id: String, client_id: String, client_secret: S
 
     Ok(GcpClient {
         project_id,
-        client_id,client_secret,
+        client_id,
+        client_secret,
         token,
         http,
     })
@@ -25,8 +30,11 @@ pub enum Error {
     Json(serde_json::Error),
     Http(reqwest::Error),
     GcpAuth(gcp_auth::Error),
+    Base64(base64::DecodeError),
+    Utf8(std::string::FromUtf8Error),
 
     InvalidDatastoreContent(String),
+    EmailWithoutFromField,
 }
 
 // TODO See if it's still needed with thiserror or anyhow
@@ -58,6 +66,16 @@ impl From<reqwest::Error> for Error {
 impl From<gcp_auth::Error> for Error {
     fn from(error: gcp_auth::Error) -> Self {
         Error::GcpAuth(error)
+    }
+}
+impl From<base64::DecodeError> for Error {
+    fn from(error: base64::DecodeError) -> Self {
+        Error::Base64(error)
+    }
+}
+impl From<std::string::FromUtf8Error> for Error {
+    fn from(error: std::string::FromUtf8Error) -> Self {
+        Error::Utf8(error)
     }
 }
 
@@ -125,14 +143,12 @@ impl GcpClient {
         }
     }
 
+    // https://cloud.google.com/identity-platform/docs/use-rest-api#section-refresh-token
     pub async fn refresh_user_token(&self, token: &mut UserToken) -> Result<(), Error> {
         debug!("Refreshing user token");
 
         let mut form = std::collections::HashMap::new();
-        form.insert(
-            "client_id",
-            self.client_id.as_str(),
-        );
+        form.insert("client_id", self.client_id.as_str());
         form.insert("client_secret", self.client_secret.as_str());
         form.insert("grant_type", "refresh_token");
         form.insert("refresh_token", token.refresh_token());
@@ -151,11 +167,12 @@ impl GcpClient {
         Ok(())
     }
 
+    // https://developers.google.com/gmail/api/reference/rest/v1/users.history/list
     pub async fn gmail_users_history_list(
         &self,
         token: &UserToken,
         history_id: HistoryId,
-    ) -> Result<Vec<gmail::HistoryMessage>, Error> {
+    ) -> Result<Vec<MessageId>, Error> {
         debug!("Fetching user history list");
 
         let res = self
@@ -168,22 +185,68 @@ impl GcpClient {
 
         let result: gmail::HistoryListResponse = res.json().await?;
 
-        println!("history: {:?}", result);
-
         Ok(result
             .history
             .into_iter()
             .flat_map(|h| h.messages)
+            .map(|h| h.id)
             .collect())
     }
+
+    // https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get
+    pub async fn gmail_get_message(&self, message_id: &MessageId) -> Result<EmailMessage, Error> {
+        debug!("Fetching message {}", message_id.0);
+
+        let res = self
+            .http
+            .get(&format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}",
+                id = message_id.0
+            ))
+            .bearer_auth(self.token.as_str())
+            .send()
+            .await?;
+
+        let status = res.status();
+        let body = res.text().await?;
+
+        match serde_json::from_str::<gmail::Message>(&body) {
+            Ok(result) => {
+                let from_header = result
+                    .payload
+                    .headers
+                    .iter()
+                    .find(|h| h.name == "From")
+                    .ok_or(Error::EmailWithoutFromField)?;
+                let from = from_header.value.clone();
+
+                // TODO Find the correct body part and extract the mail's body from it
+
+                Ok(EmailMessage { from })
+            }
+            Err(error) => {
+                warn!(
+                    "Couldn't fetch GMail message. status={} Response body =\n{}",
+                    status, body
+                );
+                Err(error.into())
+            }
+        }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub enum DatastoreLookup {
     // For now we only return the token
     Found { token: String },
     Missing,
+}
+
+/// A simplified version of gmail's [Message](gmail::Message)
+#[derive(Debug)]
+pub struct EmailMessage {
+    from: String,
+    //body: String,
 }
 
 /// data structure used on the wire by Cloud Datastore APIs
@@ -266,12 +329,48 @@ mod gmail {
 
     #[derive(Debug, Deserialize, PartialEq)]
     #[serde(rename_all = "camelCase")]
-    pub struct HistoryMessage {
-        id: super::MessageId,
-        thread_id: String,
+    pub(super) struct HistoryMessage {
+        pub(super) id: super::MessageId,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct Message {
+        pub(super) payload: MessagePart,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    pub(super) struct MessagePart {
+        pub(super) headers: Vec<Header>,
+        pub(super) body: MessagePartBody,
+        pub(super) parts: Vec<MessagePart>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    pub(super) struct Header {
+        pub(super) name: String,
+        pub(super) value: String,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    pub(super) struct MessagePartBody {
+        size: u32,
+        data: String,
+    }
+
+    impl MessagePartBody {
+        pub(super) fn decoded_data(&self) -> Result<String, super::Error> {
+            if self.size == 0 {
+                Err(base64::DecodeError::InvalidLength)?;
+            }
+
+            let bytes = base64::decode(&self.data)?;
+            let s = String::from_utf8(bytes)?;
+
+            Ok(s)
+        }
     }
 }
-
 
 mod identity {
     use serde::Deserialize;
