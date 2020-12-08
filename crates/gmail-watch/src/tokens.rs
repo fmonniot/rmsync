@@ -30,6 +30,20 @@ pub struct UserToken {
 }
 
 impl UserToken {
+    pub fn as_str(&self) -> &str {
+        &self.access_token
+    }
+
+    pub fn set_access_token(&mut self, tok: String) {
+        self.access_token = tok;
+    }
+
+    pub fn refresh_token(&self) -> &str {
+        &self.refresh_token
+    }
+}
+
+impl UserToken {
     pub fn from_encrypted_blob(
         crypto: &Cryptographer,
         encrypted_blob: &str,

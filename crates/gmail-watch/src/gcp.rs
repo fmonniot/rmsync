@@ -1,5 +1,6 @@
 use crate::tokens::UserToken;
 use gcp_auth::{AuthenticationManager, Token};
+use log::debug;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -47,6 +48,7 @@ impl From<gcp_auth::Error> for Error {
 
 pub struct GcpClient {
     project_id: String,
+    #[allow(unused)] // TODO Do we need it here ? Depends on how we share this across calls
     authentication_manager: AuthenticationManager,
     token: Token,
     http: reqwest::Client,
@@ -108,7 +110,55 @@ impl GcpClient {
         }
     }
 
-    pub async fn gmail_users_history_list(&self, token: &UserToken, history_id: HistoryId) {}
+    pub async fn refresh_user_token(&self, token: &mut UserToken) -> Result<(), Error> {
+        debug!("Refreshing user token");
+
+        let mut form = std::collections::HashMap::new();
+        form.insert("client_id", "");
+        form.insert("client_secret", "");
+        form.insert("grant_type", "refresh_token");
+        form.insert("refresh_token", token.refresh_token());
+
+        let res = self
+            .http
+            .post("https://oauth2.googleapis.com/token")
+            .form(&form)
+            .send()
+            .await?;
+
+        let new_token: identity::RefreshTokenResponse = res.json().await?;
+
+        token.set_access_token(new_token.access_token);
+
+        Ok(())
+    }
+
+    pub async fn gmail_users_history_list(
+        &self,
+        token: &UserToken,
+        history_id: HistoryId,
+    ) -> Result<Vec<gmail::HistoryMessage>, Error> {
+        debug!("Fetching user history list");
+
+        let res = self
+            .http
+            .get("https://gmail.googleapis.com/gmail/v1/users/me/history")
+            .bearer_auth(&token.as_str())
+            .query(&[("startHistoryId", history_id.0)])
+            .send()
+            .await?;
+
+        let result: gmail::HistoryListResponse = res.json().await?;
+
+        println!("history: {:?}", result);
+
+        Ok(result
+            .history
+            .into_iter()
+            .flat_map(|h| h.messages)
+            .collect())
+    }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +168,7 @@ pub enum DatastoreLookup {
     Missing,
 }
 
-/// data structure used on the wire
+/// data structure used on the wire by Cloud Datastore APIs
 mod datastore {
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -177,8 +227,51 @@ mod datastore {
     }
 }
 
+/// data structure used on the wire by GMail APIs
+mod gmail {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct HistoryListResponse {
+        pub(super) history: Vec<History>,
+        next_page_token: Option<String>,
+        history_id: String,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct History {
+        id: String,
+        pub(super) messages: Vec<HistoryMessage>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase")]
+    pub struct HistoryMessage {
+        id: super::MessageId,
+        thread_id: String,
+    }
+}
+
+
+mod identity {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    pub(super) struct RefreshTokenResponse {
+        pub(super) access_token: String,
+        pub(super) expires_in: u32,
+        pub(super) token_type: String,
+        pub(super) scope: String,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct HistoryId(String);
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct MessageId(String);
 
 #[cfg(test)]
 mod tests {

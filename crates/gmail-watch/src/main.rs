@@ -10,7 +10,7 @@ use fanfictionnet::Chapter;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
-use log::{error, info};
+use log::{debug, error, info};
 use rmcloud::DocumentId;
 use serde::Deserialize;
 
@@ -24,7 +24,7 @@ struct Notification {
     email_address: String,
 
     #[serde(rename = "historyId")]
-    history_id: String,
+    history_id: gcp::HistoryId,
 }
 
 #[derive(Debug)]
@@ -79,14 +79,14 @@ impl From<tokens::TokenError> for Error {
 // Definitively an optimization though.
 
 async fn convert(notification: Notification) -> Result<(), Error> {
-    // Example of a notification we can receive: { emailAddress: francoismonniot@gmail.com, historyId: 31838035 }
+    info!("Received notification {:?}", notification);
 
     let gcp = gcp::make_client("rmsync".to_string()).await?;
     let result = gcp
         .cloud_datastore_user_by_email(&notification.email_address)
         .await?;
 
-    let user_token = match result {
+    let mut user_token = match result {
         gcp::DatastoreLookup::Found { token } => {
             let crypto = tokens::Cryptographer::from_env().unwrap();
             tokens::UserToken::from_encrypted_blob(&crypto, &token)?
@@ -96,7 +96,18 @@ async fn convert(notification: Notification) -> Result<(), Error> {
         }
     };
 
+    // Might be skippable within the first hours after login, but otherwise always required
+    gcp.refresh_user_token(&mut user_token).await?;
+
+    let history = gcp
+        .gmail_users_history_list(&user_token, notification.history_id)
+        .await?;
+
     let _ = fetch_mail_content().await?;
+
+    // While I'm developing the Google Cloud side of things,
+    // let's not create resources on the remarkable cloud.
+    return Ok(());
 
     // Will come from the mail content
     let sid = fanfictionnet::new_story_id(4985743);
