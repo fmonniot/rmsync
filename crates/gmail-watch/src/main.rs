@@ -9,11 +9,12 @@ use epub_builder::ZipLibrary;
 use fanfictionnet::Chapter;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
+use log::warn;
 use log::{error, info};
 use rmcloud::DocumentId;
-use log::warn;
 use serde::Deserialize;
 
+mod gcp;
 mod tokens;
 
 // {"emailAddress": "user@example.com", "historyId": "9876543210"}
@@ -32,6 +33,7 @@ enum Error {
     RMCloud(rmcloud::Error),
     Epub(epub_builder::Error),
     Io(std::io::Error),
+    Gcp(gcp::Error),
 }
 
 impl From<fanfictionnet::Error> for Error {
@@ -58,7 +60,35 @@ impl From<std::io::Error> for Error {
     }
 }
 
-async fn convert(_notification: Notification) -> Result<(), Error> {
+impl From<gcp::Error> for Error {
+    fn from(error: gcp::Error) -> Self {
+        Error::Gcp(error)
+    }
+}
+
+// TODO Find a way to create clients only once. Thinking of GCP and Crypto, maybe rmcloud.
+// The idea being if many emails arrive at once, we can reuse the tokens across sessions
+// instead of creating new one every time.
+// Definitively an optimization though.
+
+async fn convert(notification: Notification) -> Result<(), Error> {
+    // Example of a notification we can receive: { emailAddress: francoismonniot@gmail.com, historyId: 31838035 }
+
+    let gcp = gcp::make_client("rmsync".to_string()).await?;
+    let result = gcp
+        .cloud_datastore_user_by_email(&notification.email_address)
+        .await?;
+
+    let user_token = match result {
+        gcp::DatastoreLookup::Found { token } => {
+            let crypto = tokens::Cryptographer::from_env().unwrap();
+            tokens::UserToken::from_encrypted_blob(&crypto, &token)?
+        }
+        _ => {
+            todo!("return an error")
+        }
+    };
+
     let _ = fetch_mail_content().await?;
 
     // Will come from the mail content

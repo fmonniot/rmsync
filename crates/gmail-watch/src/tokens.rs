@@ -1,10 +1,10 @@
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub enum TokenError {
     Crypto(CryptoError),
     Json(serde_json::Error),
 }
-
 
 impl From<CryptoError> for TokenError {
     fn from(e: CryptoError) -> Self {
@@ -19,7 +19,7 @@ impl From<serde_json::Error> for TokenError {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Token {
+pub struct UserToken {
     access_token: String,
     refresh_token: String,
     scope: String,
@@ -28,37 +28,28 @@ pub struct Token {
     expiry_date: u32,
 }
 
-pub struct TokenManager {
-    crypto: Cryptographer,
-}
-
-impl TokenManager {
-    pub async fn fetch_by_email(&self, email: &str) -> Result<Token, TokenError> {
-        let encrypted_blob = self.fetch_from_datastore(email).await?;
-
-        let blob = self.crypto.decrypt(&encrypted_blob)?;
-
+impl UserToken {
+    pub fn from_encrypted_blob(
+        crypto: &Cryptographer,
+        encrypted_blob: &str,
+    ) -> Result<UserToken, TokenError> {
+        let blob = crypto.decrypt(&encrypted_blob)?;
         let token = serde_json::from_slice(&blob)?;
-        
+
         Ok(token)
     }
-
-    async fn fetch_from_datastore(&self, email: &str) -> Result<String, TokenError> {
-        // TODO Add Google Cloud Datastore call here
-        Ok("".to_string())
-    }
 }
-
 
 #[derive(Debug)]
 pub enum CryptoError {
     Base64(base64::DecodeError),
     Decryption,
+    EnvVar(std::env::VarError),
 }
 
 impl From<std::env::VarError> for CryptoError {
-    fn from(_error: std::env::VarError) -> Self {
-        todo!("var")
+    fn from(e: std::env::VarError) -> Self {
+        CryptoError::EnvVar(e)
     }
 }
 
@@ -74,10 +65,9 @@ pub struct Cryptographer {
 
 const NONCE_LENGTH: usize = 24;
 
-use sodiumoxide::crypto::secretbox::{self, Nonce, Key};
+use sodiumoxide::crypto::secretbox::{self, Key, Nonce};
 
 impl Cryptographer {
-
     pub fn from_env() -> Result<Cryptographer, CryptoError> {
         let key = std::env::var("CRYPTO_KEY")?;
 
@@ -88,15 +78,14 @@ impl Cryptographer {
         let key_bytes = key_to_bytes(key)?;
         let key = Key::from_slice(&key_bytes).expect("can't create key");
 
-        Ok(Cryptographer {
-            key
-        })
+        Ok(Cryptographer { key })
     }
 
     pub fn decrypt(&self, cipher: &str) -> Result<Vec<u8>, CryptoError> {
         let msg_nonce = base64::decode(cipher)?;
 
-        let nonce = Nonce::from_slice(&msg_nonce[..NONCE_LENGTH]).expect("not sure what to expect actually");
+        let nonce = Nonce::from_slice(&msg_nonce[..NONCE_LENGTH])
+            .expect("not sure what to expect actually");
         let msg = &msg_nonce[NONCE_LENGTH..];
 
         let vec = secretbox::open(msg, &nonce, &self.key).map_err(|_| CryptoError::Decryption)?;
@@ -105,8 +94,6 @@ impl Cryptographer {
     }
 }
 
-use sha2::{Sha256, Digest};
-
 fn key_to_bytes(key: &str) -> Result<Vec<u8>, base64::DecodeError> {
     let mut hasher = Sha256::new();
     hasher.update(key);
@@ -114,7 +101,10 @@ fn key_to_bytes(key: &str) -> Result<Vec<u8>, base64::DecodeError> {
 
     let key = format!("{}=", &hex::encode(result)[..43]);
 
-    base64::decode_config(key.as_bytes(), base64::STANDARD.decode_allow_trailing_bits(true))
+    base64::decode_config(
+        key.as_bytes(),
+        base64::STANDARD.decode_allow_trailing_bits(true),
+    )
 }
 
 #[cfg(test)]
