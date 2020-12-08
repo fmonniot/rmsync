@@ -1,0 +1,39 @@
+{
+    "found": [
+      {
+        "entity": {
+          "key": {
+            "partitionId": {
+              "projectId": "pid"
+            },
+            "path": [
+              {
+                "kind": "oauth2token",
+                "name": "my@gmail.com"
+              }
+            ]
+          },
+          "properties": {
+            "token": {
+              "stringValue": "LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O",
+              "excludeFromIndexes": true
+            },
+            "scopes": {
+              "arrayValue": {
+                "values": [
+                  {
+                    "stringValue": "email"
+                  },
+                  {
+                    "stringValue": "profile"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "version": "2907302240639813"
+      }
+    ]
+  }
+  

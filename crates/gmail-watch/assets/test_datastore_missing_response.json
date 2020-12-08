@@ -1,0 +1,20 @@
+{
+  "missing": [
+    {
+      "entity": {
+        "key": {
+          "partitionId": {
+            "projectId": "pid"
+          },
+          "path": [
+            {
+              "kind": "oauth2token",
+              "name": "my@gmail.com"
+            }
+          ]
+        }
+      },
+      "version": "2907302240639813"
+    }
+  ]
+}
