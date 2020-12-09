@@ -593,63 +593,6 @@ mod multipart {
 
     // TODO Rename functions and test names. They don't make a lot of sense right now.
 
-    #[cfg(test)]
-    #[test]
-    fn test_parse_http_response_parts() {
-        let not_modified = "HTTP/1.1 304 Not Modified\n\
-              ETag: \"etag/animals\"\n\
-              \n\
-              ";
-        let raw_response = Bytes::from_static(not_modified.as_bytes());
-
-        let (builder, remaining) = parse_response_parts(raw_response.clone());
-        let response = builder.body(()).unwrap();
-
-        let ok = hyper::StatusCode::from_u16(200).unwrap();
-        let etag_value = hyper::header::HeaderValue::from_static("\"etag/animals\"");
-
-        assert_eq!(remaining, raw_response.len());
-        assert_eq!(response.status(), hyper::StatusCode::from_u16(304).unwrap());
-        assert_eq!(response.headers().get("ETag"), Some(&etag_value));
-    }
-
-    #[cfg(test)]
-    #[test]
-    fn test_read_http_response() {
-        let headers = "Content-Type: application/http\n\
-            Content-ID: response-{id}\n\
-            \n\
-            HTTP/1.1 200 OK\n\
-            Content-Type: application/json\n\
-            Content-Length: 156\n\
-            \n\
-              ";
-        let body = "{\n\
-            \"kind\": \"farm#animal\",\n\
-            \"etag\": \"etag/pony\",\n\
-            \"selfLink\": \"/farm/v1/animals/pony\",\n\
-            \"animalName\": \"pony\",\n\
-            \"animalAge\": 34,\n\
-            \"peltColor\": \"white\"\n\
-          }\n\
-          ";
-        let raw_body = Bytes::from(body.as_bytes());
-        let raw_response = [headers, body].concat();
-        let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
-
-        let response = parse_response(raw_response);
-
-        let ok = hyper::StatusCode::from_u16(200).unwrap();
-        let ct_value = hyper::header::HeaderValue::from_static("application/json");
-        let cl_value = hyper::header::HeaderValue::from_static("156");
-
-        assert_eq!(response.status(), hyper::StatusCode::from_u16(200).unwrap());
-        assert_eq!(response.headers().get("Content-Type"), Some(&ct_value));
-        assert_eq!(response.headers().get("Content-Length"), Some(&cl_value));
-
-        assert_eq!(response.body(), &raw_body);
-    }
-
     struct MultipartReader {
         bytes: Bytes,
         position: usize,
@@ -759,6 +702,64 @@ mod multipart {
         fn next(&mut self) -> Option<Self::Item> {
             self.next_part()
         }
+    }
+
+
+    #[cfg(test)]
+    #[test]
+    fn test_parse_http_response_parts() {
+        let not_modified = "HTTP/1.1 304 Not Modified\n\
+              ETag: \"etag/animals\"\n\
+              \n\
+              ";
+        let raw_response = Bytes::from_static(not_modified.as_bytes());
+
+        let (builder, remaining) = parse_http_response(raw_response.clone());
+        let response = builder.body(()).unwrap();
+
+        let ok = hyper::StatusCode::from_u16(200).unwrap();
+        let etag_value = hyper::header::HeaderValue::from_static("\"etag/animals\"");
+
+        assert_eq!(remaining, raw_response.len());
+        assert_eq!(response.status(), hyper::StatusCode::from_u16(304).unwrap());
+        assert_eq!(response.headers().get("ETag"), Some(&etag_value));
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_read_http_response() {
+        let headers = "Content-Type: application/http\n\
+            Content-ID: response-{id}\n\
+            \n\
+            HTTP/1.1 200 OK\n\
+            Content-Type: application/json\n\
+            Content-Length: 156\n\
+            \n\
+              ";
+        let body = "{\n\
+            \"kind\": \"farm#animal\",\n\
+            \"etag\": \"etag/pony\",\n\
+            \"selfLink\": \"/farm/v1/animals/pony\",\n\
+            \"animalName\": \"pony\",\n\
+            \"animalAge\": 34,\n\
+            \"peltColor\": \"white\"\n\
+          }\n\
+          ";
+        let raw_body = Bytes::from(body.as_bytes());
+        let raw_response = [headers, body].concat();
+        let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
+
+        let response = parse_multipart_response(raw_response);
+
+        let ok = hyper::StatusCode::from_u16(200).unwrap();
+        let ct_value = hyper::header::HeaderValue::from_static("application/json");
+        let cl_value = hyper::header::HeaderValue::from_static("156");
+
+        assert_eq!(response.status(), hyper::StatusCode::from_u16(200).unwrap());
+        assert_eq!(response.headers().get("Content-Type"), Some(&ct_value));
+        assert_eq!(response.headers().get("Content-Length"), Some(&cl_value));
+
+        assert_eq!(response.body(), &raw_body);
     }
 
     #[cfg(test)]
