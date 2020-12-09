@@ -472,8 +472,7 @@ mod identity {
 #[allow(unused)]
 mod multipart {
 
-    use bytes::Buf;
-    use bytes::Bytes;
+    use bytes::{Buf,Bytes};
     use httparse::{parse_headers, EMPTY_HEADER};
     use log::{debug, error};
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
@@ -762,29 +761,34 @@ mod multipart {
         }
     }
 
-    // Tests, will probably move to a submodule
-    use std::path::PathBuf;
-
-    #[cfg(test)]
-    fn asset(p: &str) -> String {
-        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        d.push("assets");
-        d.push(p);
-
-        std::fs::read_to_string(d).unwrap()
-    }
-
     #[cfg(test)]
     #[test]
     fn test_read_parts() {
-        let boundary = "batch_foobarbaz";
+        let boundary = "boundary";
+        let raw =  "\r\n--boundary\r\n\
+                Content-ID: response-{id1}\n\
+                \n\
+                HTTP/1.1 200 OK\n\
+                \n\
+                \r\n--boundary\r\n\
+                Content-ID: response-{id22}\n\
+                \n\
+                HTTP/1.1 200 OK\n\
+                \n\
+                \r\n--boundary\r\n\
+                Content-ID: response-{id333}\n\
+                \n\
+                HTTP/1.1 200 OK\n\
+                \n\
+                \r\n--boundary--\r\n\
+              ";
 
-        let bytes = Bytes::from(asset("multipart_http_response.txt"));
+        let bytes = Bytes::from(raw.as_bytes());
         let mut reader = MultipartReader::new(bytes, boundary).map(|b| b.len());
 
-        assert_eq!(reader.next(), Some(328));
-        assert_eq!(reader.next(), Some(365));
-        assert_eq!(reader.next(), Some(142));
+        assert_eq!(reader.next(), Some(45));
+        assert_eq!(reader.next(), Some(46));
+        assert_eq!(reader.next(), Some(47));
         assert_eq!(reader.next(), None);
         assert_eq!(reader.next(), None);
     }
