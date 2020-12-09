@@ -549,12 +549,14 @@ mod multipart {
         PartialHeaders(&'static str),
     }
 
+    type ReadResult<T> = Result<T, ReadMultipartError>;
+
     /// Given a `multipart/mixed` response body, parse each part of the response
     /// and return each response as hyper's [`Response<Bytes>`](hyper::Response).
     pub(super) fn read_response_body(
         boundary: &str,
         body: Bytes,
-    ) -> Vec<Result<hyper::Response<Bytes>, ReadMultipartError>> {
+    ) -> Vec<ReadResult<hyper::Response<Bytes>>> {
         MultipartReader::new(body, boundary)
             .map(parse_multipart_response)
             .collect()
@@ -564,7 +566,7 @@ mod multipart {
     /// if the `Content-Type` is `application/html`.
     fn parse_multipart_response(
         mut raw_response: Bytes,
-    ) -> Result<hyper::Response<Bytes>, ReadMultipartError> {
+    ) -> ReadResult<hyper::Response<Bytes>> {
         // There should only be Content-Type and Content-Length as the part headers
         const HEADER_LEN: usize = 2;
 
@@ -596,7 +598,7 @@ mod multipart {
     /// where the response body start.
     fn parse_http_response(
         raw_response: Bytes,
-    ) -> Result<(hyper::http::response::Builder, usize), ReadMultipartError> {
+    ) -> ReadResult<(hyper::http::response::Builder, usize)> {
         let r: &[u8] = &raw_response;
         let mut h = [httparse::EMPTY_HEADER; 10];
         let mut response = httparse::Response::new(&mut h);
