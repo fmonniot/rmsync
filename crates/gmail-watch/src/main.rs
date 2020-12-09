@@ -107,7 +107,10 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     info!("Will fetch {} emails", history.len());
 
-    let res = cfg.gcp.gmail_get_messages(&user_token, history.into_iter().take(3)).await;
+    let res = cfg
+        .gcp
+        .gmail_get_messages(&user_token, history.into_iter().take(3))
+        .await;
 
     info!("batch response: {:?}", res);
 

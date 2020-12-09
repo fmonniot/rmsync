@@ -3,7 +3,7 @@ Content-Type: application/http
 Content-ID: response-{id}
 
 HTTP/1.1 200 OK
-Content-Type application/json
+Content-Type: application/json
 Content-Length: response_part_1_content_length
 ETag: "etag/pony"
 
@@ -40,5 +40,7 @@ Content-ID: <response-item3:12930812@barnyard.example.com>
 
 HTTP/1.1 304 Not Modified
 ETag: "etag/animals"
+
+{}
 
 --batch_foobarbaz--

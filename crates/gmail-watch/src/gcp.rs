@@ -1,9 +1,9 @@
 use crate::tokens::UserToken;
 use gcp_auth::Token;
 use log::{debug, warn};
+use mime::Mime;
 use serde::Deserialize;
 use serde_json::json;
-use mime::Mime;
 
 // TODO It'd be nice to share the AuthenticationManager and reqwest::Client between connections
 pub async fn make_client(
@@ -236,34 +236,65 @@ impl GcpClient {
         }
     }
 
-    pub async fn gmail_get_messages<I: Iterator<Item = MessageId>>(&self, token: &UserToken, message_ids: I) -> Result<Vec<EmailMessage>, Error> {
+    pub async fn gmail_get_messages<I: Iterator<Item = MessageId>>(
+        &self,
+        token: &UserToken,
+        message_ids: I,
+    ) -> Result<Vec<EmailMessage>, Error> {
         debug!("Fetching messages in batch");
         use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
 
-
-        let req = self.http.post("https://www.googleapis.com/batch/gmail/v1")
+        let req = self
+            .http
+            .post("https://www.googleapis.com/batch/gmail/v1")
             .bearer_auth(token.as_str());
-        
-        let res = multipart::gmail_get_messages_batch(req, message_ids.map(|i| i.0.clone())).send().await?;
 
-        let h = res.headers().get(CONTENT_TYPE).ok_or(Error::MissingValidMultipartContentType)?;
+        let res = multipart::gmail_get_messages_batch(req, message_ids.map(|i| i.0.clone()))
+            .send()
+            .await?;
+
+        let h = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .ok_or(Error::MissingValidMultipartContentType)?;
 
         println!("content-type: {:?}", h);
         let mime = h.to_str().unwrap().parse::<Mime>().unwrap(); // TODO Errors
 
-        
         // Might need convertion, let's see what httparse returns us
         let boundary = mime.get_param("boundary").unwrap().to_string(); // TODO Errors
 
         // content-type: "multipart/mixed; boundary=batch_47XVjsIfPXGWk00LSpbABytFrk9NfNT3"
 
-        let response_body = res.text().await?;
-        
-        println!("batch.response.body = {}", response_body);
+        let response_body = res.bytes().await?;
 
-        multipart::read_multipart_response(&boundary, &response_body);
+        let s = response_body.clone().to_vec();
+        let s = String::from_utf8(s).unwrap();
 
-        Ok(vec![])
+        println!("batch.response.boundary = {}", boundary);
+        println!("batch.response.body = {}", s);
+
+        let responses = multipart::read_multipart_response(&boundary, response_body);
+
+        let i: Vec<Result<EmailMessage, Error>> = responses
+            .iter()
+            .map(|r| {
+                let m = serde_json::from_slice(r.body())?;
+                let m = EmailMessage::from(m)?;
+
+                Ok(m)
+            })
+            .collect();
+
+        let mut messages = Vec::new();
+        for e in i {
+            match e {
+                Ok(e) => messages.push(e),
+                Err(e) => warn!("Couldn't parse email: {:?}", e),
+            }
+        }
+
+        Ok(messages)
     }
 }
 
@@ -279,6 +310,22 @@ pub enum DatastoreLookup {
 pub struct EmailMessage {
     from: String,
     //body: String,
+}
+
+impl EmailMessage {
+    fn from(message: gmail::Message) -> Result<EmailMessage, Error> {
+        let from_header = message
+            .payload
+            .headers
+            .iter()
+            .find(|h| h.name == "From")
+            .ok_or(Error::EmailWithoutFromField)?;
+        let from = from_header.value.clone();
+
+        // TODO Find the correct body part and extract the mail's body from it
+
+        Ok(EmailMessage { from })
+    }
 }
 
 /// data structure used on the wire by Cloud Datastore APIs
@@ -423,9 +470,12 @@ mod identity {
 #[allow(unused)]
 mod multipart {
 
+    use bytes::Buf;
+    use bytes::Bytes;
+    use httparse::{parse_headers, EMPTY_HEADER};
+    use log::{debug, error};
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
     use reqwest::{Client, RequestBuilder, Response};
-    use bytes::Bytes;
 
     // Because implementing a generic http encoder is way too much rust (the one in hyper
     // is 100+ lines long and manage a lot of edge cases). Given that all I need is to include
@@ -441,7 +491,10 @@ mod multipart {
     // ```
     // I'm just going to do it manually. It would be helpful if in the future there would
     // be a `httpencode` crate, like there is a `httparse` one
-    pub(super) fn gmail_get_messages_batch<I: Iterator<Item = String>>(builder: RequestBuilder, ids: I) -> RequestBuilder {
+    pub(super) fn gmail_get_messages_batch<I: Iterator<Item = String>>(
+        builder: RequestBuilder,
+        ids: I,
+    ) -> RequestBuilder {
         const BOUNDARY: &str = "batch_foobarbaz";
         let mut body = Vec::new();
 
@@ -461,28 +514,256 @@ mod multipart {
 
         body.extend(format!("--{}--", BOUNDARY).as_bytes());
 
-        println!("request.body = {}", String::from_utf8(body.clone()).unwrap());
-
         builder
             .header(CONTENT_TYPE, "multipart/mixed; boundary=batch_foobarbaz")
             .header(CONTENT_LENGTH, body.len())
             .body(body)
     }
 
-
     // we should really do something at the bytes level, looking for known pattern and separating
     // into bytes in the middle
-    pub(super) fn read_multipart_response(boundary: &str, body: &String) {
+    pub(super) fn read_multipart_response(
+        boundary: &str,
+        body: Bytes,
+    ) -> Vec<hyper::Response<Bytes>> {
+        let reader = MultipartReader::new(body, boundary);
+        let mut responses = Vec::new();
 
-        for (idx, part) in body.split(&format!("--{}", boundary)).enumerate() {
-            println!("part size: {}", part.len())
+        // There should only be Content-Type and Content-Length as the part headers
+        const HEADER_LEN: usize = 2;
+
+        // TODO Use as an iterator + map instead
+        for mut raw_response in reader {
+            let r = parse_response(raw_response);
+
+            responses.push(r);
         }
 
+        responses
+    }
+
+    // TODO Error management
+    fn parse_response(mut raw_response: Bytes) -> hyper::Response<Bytes> {
+        // There should only be Content-Type and Content-Length as the part headers
+        const HEADER_LEN: usize = 2;
+
+        // We just want to find out the end of the part headers, so we read them using
+        // httparse::parse_headers and discard the result (we know there are only two of them)
+        let mut raw_headers = [EMPTY_HEADER; HEADER_LEN];
+        match parse_headers(&raw_response, &mut raw_headers).unwrap() {
+            httparse::Status::Partial => {
+                panic!("Partial header on a finite body, something went wrong")
+            }
+            httparse::Status::Complete((end_headers, _)) => {
+                raw_response.advance(end_headers);
+
+                let (builder, body_position) = parse_response_parts(raw_response.clone());
+
+                raw_response.advance(body_position);
+
+                let b = builder.body(raw_response).unwrap();
+
+                return b;
+            }
+        }
+    }
+
+    // TODO Error management
+    fn parse_response_parts(raw_response: Bytes) -> (hyper::http::response::Builder, usize) {
+        let r: &[u8] = &raw_response;
+        let mut h = [httparse::EMPTY_HEADER; 10];
+        let mut response = httparse::Response::new(&mut h);
+        let body_position = match response.parse(r).unwrap() {
+            httparse::Status::Partial => {
+                error!("Partial header on a finite body, something went wrong");
+                0
+            }
+            httparse::Status::Complete(p) => p,
+        };
+
+        let mut builder = hyper::Response::builder().status(response.code.unwrap());
+
+        for h in response.headers {
+            builder = builder.header(h.name, h.value);
+        }
+
+        (builder, body_position)
+    }
+
+    // TODO Rename functions and test names. They don't make a lot of sense right now.
+
+    #[cfg(test)]
+    #[test]
+    fn test_parse_http_response_parts() {
+        let not_modified = "HTTP/1.1 304 Not Modified\n\
+              ETag: \"etag/animals\"\n\
+              \n\
+              ";
+        let raw_response = Bytes::from_static(not_modified.as_bytes());
+
+        let (builder, remaining) = parse_response_parts(raw_response.clone());
+        let response = builder.body(()).unwrap();
+
+        let ok = hyper::StatusCode::from_u16(200).unwrap();
+        let etag_value = hyper::header::HeaderValue::from_static("\"etag/animals\"");
+
+        assert_eq!(remaining, raw_response.len());
+        assert_eq!(response.status(), hyper::StatusCode::from_u16(304).unwrap());
+        assert_eq!(response.headers().get("ETag"), Some(&etag_value));
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_read_http_response() {
+        let headers = "Content-Type: application/http\n\
+            Content-ID: response-{id}\n\
+            \n\
+            HTTP/1.1 200 OK\n\
+            Content-Type: application/json\n\
+            Content-Length: 156\n\
+            \n\
+              ";
+        let body = "{\n\
+            \"kind\": \"farm#animal\",\n\
+            \"etag\": \"etag/pony\",\n\
+            \"selfLink\": \"/farm/v1/animals/pony\",\n\
+            \"animalName\": \"pony\",\n\
+            \"animalAge\": 34,\n\
+            \"peltColor\": \"white\"\n\
+          }\n\
+          ";
+        let raw_body = Bytes::from(body.as_bytes());
+        let raw_response = [headers, body].concat();
+        let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
+
+        let response = parse_response(raw_response);
+
+        let ok = hyper::StatusCode::from_u16(200).unwrap();
+        let ct_value = hyper::header::HeaderValue::from_static("application/json");
+        let cl_value = hyper::header::HeaderValue::from_static("156");
+
+        assert_eq!(response.status(), hyper::StatusCode::from_u16(200).unwrap());
+        assert_eq!(response.headers().get("Content-Type"), Some(&ct_value));
+        assert_eq!(response.headers().get("Content-Length"), Some(&cl_value));
+
+        assert_eq!(response.body(), &raw_body);
+    }
+
+    struct MultipartReader {
+        bytes: Bytes,
+        position: usize,
+        boundary: Bytes,
+        boundary_end: Bytes,
+    }
+
+    const BOUNDARY_SEP: &[u8] = "--".as_bytes();
+    const NEWLINE: &[u8] = "\n".as_bytes();
+
+    impl MultipartReader {
+        fn new(bytes: Bytes, boundary: &str) -> MultipartReader {
+            let boundary_bytes = boundary.as_bytes();
+            let start = [BOUNDARY_SEP, boundary_bytes, NEWLINE].concat();
+            let boundary = Bytes::copy_from_slice(&start);
+            let end = [BOUNDARY_SEP, boundary_bytes, BOUNDARY_SEP].concat();
+            let boundary_end = Bytes::copy_from_slice(&end);
+
+            MultipartReader {
+                bytes,
+                position: 0,
+                boundary,
+                boundary_end,
+            }
+        }
+
+        // The whole algorimth assume we have the data in memory and try to not copy said data.
+        // We might want to use a stream of data instead, let's see how it goes.
+        fn next_part(&mut self) -> Option<Bytes> {
+            // This clone will only clone the pointer to the underlying memory, not the data itself
+            let mut bytes = self.bytes.clone();
+
+            // Let's resume where we left off on the last iteration
+            bytes.advance(self.position);
+
+            debug!(
+                "next: self.position: {}; remaining: {}",
+                self.position,
+                bytes.remaining()
+            );
+
+            // Nothing remains in the buffer so we are done looking into the multipart content
+            if !bytes.has_remaining() {
+                return None;
+            }
+
+            // We have to keep track of the position within the Buf ourselves
+            let mut position = self.position;
+            let mut boundary_found = false;
+            let mut boundary_offset = 0;
+
+            loop {
+                // We are pointing at the start of a boundary
+                if bytes.remaining() >= self.boundary.len()
+                    && &bytes[0..self.boundary.len()] == self.boundary
+                {
+                    boundary_found = true;
+                    boundary_offset = self.boundary.len();
+                    break;
+                }
+
+                // We are at the end of the body, looking for the ending boundary
+                if bytes.remaining() == self.boundary_end.len()
+                    && &bytes[0..self.boundary_end.len()] == self.boundary_end
+                {
+                    boundary_found = true;
+                    boundary_offset = self.boundary_end.len();
+                    break;
+                }
+
+                // stop gap if no boundary have been found and the body is all read
+                if !bytes.has_remaining() {
+                    break;
+                }
+
+                bytes.advance(1);
+                position += 1;
+            }
+
+            debug!(
+                "after loop: position: {}; boundary_found: {}; boundary_offset: {}",
+                position, boundary_found, boundary_offset
+            );
+
+            if boundary_found {
+                if position == 0 {
+                    // special case, on the very first loop the boundary is found first so we have no
+                    // part to return yet. So we advance the buffer by the boundary and do another run.
+                    // This is to avoid returning an empty Bytes on the first call.
+                    self.position += boundary_offset;
+                    return self.next();
+                }
+
+                let slice = self.bytes.slice(self.position..position);
+                self.position = position + boundary_offset;
+
+                Some(slice)
+            } else {
+                None
+            }
+        }
+    }
+
+    impl Iterator for MultipartReader {
+        type Item = Bytes;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.next_part()
+        }
     }
 
     // Tests, will probably move to a submodule
     use std::path::PathBuf;
 
+    #[cfg(test)]
     fn asset(p: &str) -> String {
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("assets");
@@ -491,13 +772,19 @@ mod multipart {
         std::fs::read_to_string(d).unwrap()
     }
 
-    //#[test]
-    #[tokio::test]
-    async fn test_example_request() {
-        let response = asset("multipart_http_response.txt");
-        let response = Bytes::from(response);
-        
-        read_multipart_response(&"batch_foobarbaz", &response);
+    #[cfg(test)]
+    #[test]
+    fn test_read_parts() {
+        let boundary = "batch_foobarbaz";
+
+        let bytes = Bytes::from(asset("multipart_http_response.txt"));
+        let mut reader = MultipartReader::new(bytes, boundary).map(|b| b.len());
+
+        assert_eq!(reader.next(), Some(328));
+        assert_eq!(reader.next(), Some(365));
+        assert_eq!(reader.next(), Some(142));
+        assert_eq!(reader.next(), None);
+        assert_eq!(reader.next(), None);
     }
 }
 
