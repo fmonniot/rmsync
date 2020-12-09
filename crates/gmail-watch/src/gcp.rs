@@ -423,6 +423,7 @@ mod gmail {
     pub(super) struct MessagePart {
         pub(super) headers: Vec<Header>,
         pub(super) body: MessagePartBody,
+        #[serde(default)]
         pub(super) parts: Vec<MessagePart>,
     }
 
