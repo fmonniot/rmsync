@@ -657,14 +657,14 @@ mod multipart {
     }
 
     const BOUNDARY_SEP: &[u8] = "--".as_bytes();
-    const NEWLINE: &[u8] = "\n".as_bytes();
+    const NEWLINE: &[u8] = "\r\n".as_bytes(); // HTTP use CRLF as newline character
 
     impl MultipartReader {
         fn new(bytes: Bytes, boundary: &str) -> MultipartReader {
             let boundary_bytes = boundary.as_bytes();
-            let start = [BOUNDARY_SEP, boundary_bytes, NEWLINE].concat();
+            let start = [NEWLINE, BOUNDARY_SEP, boundary_bytes, NEWLINE].concat();
             let boundary = Bytes::copy_from_slice(&start);
-            let end = [BOUNDARY_SEP, boundary_bytes, BOUNDARY_SEP].concat();
+            let end = [NEWLINE, BOUNDARY_SEP, boundary_bytes, BOUNDARY_SEP, NEWLINE].concat();
             let boundary_end = Bytes::copy_from_slice(&end);
 
             MultipartReader {
