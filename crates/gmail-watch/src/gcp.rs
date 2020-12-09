@@ -90,6 +90,9 @@ pub struct GcpClient {
     http: reqwest::Client,
 }
 
+// TODO Implement a better error system. I will need the response content in the logs
+// when a request goes wrong. Otherwise I know myself and won't put the effort to
+// investiguate further.
 impl GcpClient {
     pub async fn cloud_datastore_user_by_email(
         &self,
@@ -521,8 +524,17 @@ mod multipart {
             .body(body)
     }
 
-    // we should really do something at the bytes level, looking for known pattern and separating
-    // into bytes in the middle
+
+    #[derive(Debug, thiserror::Error)]
+    enum ReadMultipartError {
+        #[error("Can't parse HTTP headers: {0}")]
+        Httparse(#[from] httparse::Error),
+        #[error("No status code was found in the response")]
+        NoStatusCodeDefined,
+    }
+
+    /// Given a `multipart/mixed` response body, parse each part of the response
+    /// and return each response as hyper's [`Response<Bytes>`](hyper::Response).
     pub(super) fn read_multipart_response(
         boundary: &str,
         body: Bytes,
@@ -535,7 +547,7 @@ mod multipart {
 
         // TODO Use as an iterator + map instead
         for mut raw_response in reader {
-            let r = parse_response(raw_response);
+            let r = parse_multipart_response(raw_response);
 
             responses.push(r);
         }
@@ -544,7 +556,10 @@ mod multipart {
     }
 
     // TODO Error management
-    fn parse_response(mut raw_response: Bytes) -> hyper::Response<Bytes> {
+    
+    /// Given a part of a `multipart/mixed` body, parse the part headers and its body
+    /// if the `Content-Type` is `application/html`.
+    fn parse_multipart_response(mut raw_response: Bytes) -> hyper::Response<Bytes> {
         // There should only be Content-Type and Content-Length as the part headers
         const HEADER_LEN: usize = 2;
 
@@ -558,7 +573,9 @@ mod multipart {
             httparse::Status::Complete((end_headers, _)) => {
                 raw_response.advance(end_headers);
 
-                let (builder, body_position) = parse_response_parts(raw_response.clone());
+                // TODO Fails if Content-Type isn't application/html
+
+                let (builder, body_position) = parse_http_response(raw_response.clone()).unwrap();
 
                 raw_response.advance(body_position);
 
@@ -570,11 +587,15 @@ mod multipart {
     }
 
     // TODO Error management
-    fn parse_response_parts(raw_response: Bytes) -> (hyper::http::response::Builder, usize) {
+    /// Parse the status-line and headers of a HTTP response returning a hyper's builder
+    /// populated with the parsed information as well as the position within the `Bytes`
+    /// where the response body start.
+    fn parse_http_response(raw_response: Bytes) -> Result<(hyper::http::response::Builder, usize), ReadMultipartError> {
         let r: &[u8] = &raw_response;
         let mut h = [httparse::EMPTY_HEADER; 10];
         let mut response = httparse::Response::new(&mut h);
-        let body_position = match response.parse(r).unwrap() {
+        
+        let body_position = match response.parse(r)? {
             httparse::Status::Partial => {
                 error!("Partial header on a finite body, something went wrong");
                 0
@@ -582,13 +603,13 @@ mod multipart {
             httparse::Status::Complete(p) => p,
         };
 
-        let mut builder = hyper::Response::builder().status(response.code.unwrap());
+        let mut builder = hyper::Response::builder().status(response.code.ok_or(ReadMultipartError::NoStatusCodeDefined)?);
 
         for h in response.headers {
             builder = builder.header(h.name, h.value);
         }
 
-        (builder, body_position)
+        Ok((builder, body_position))
     }
 
     // TODO Rename functions and test names. They don't make a lot of sense right now.
@@ -714,7 +735,7 @@ mod multipart {
               ";
         let raw_response = Bytes::from_static(not_modified.as_bytes());
 
-        let (builder, remaining) = parse_http_response(raw_response.clone());
+        let (builder, remaining) = parse_http_response(raw_response.clone()).expect("can parse");
         let response = builder.body(()).unwrap();
 
         let ok = hyper::StatusCode::from_u16(200).unwrap();
