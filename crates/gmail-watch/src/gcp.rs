@@ -33,6 +33,7 @@ pub enum Error {
     GcpAuth(gcp_auth::Error),
     Base64(base64::DecodeError),
     Utf8(std::string::FromUtf8Error),
+    DecodeMultipart(multipart::ReadMultipartError),
 
     InvalidDatastoreContent(String),
     EmailWithoutFromField,
@@ -79,6 +80,11 @@ impl From<base64::DecodeError> for Error {
 impl From<std::string::FromUtf8Error> for Error {
     fn from(error: std::string::FromUtf8Error) -> Self {
         Error::Utf8(error)
+    }
+}
+impl From<multipart::ReadMultipartError> for Error {
+    fn from(error: multipart::ReadMultipartError) -> Self {
+        Error::DecodeMultipart(error)
     }
 }
 
@@ -257,6 +263,9 @@ impl GcpClient {
             .send()
             .await?;
 
+
+        // TODO Put all the multipart manipulation in a multipart::read_response function instead of here
+
         let h = res
             .headers()
             .get(CONTENT_TYPE)
@@ -278,15 +287,16 @@ impl GcpClient {
         println!("batch.response.boundary = {}", boundary);
         //println!("batch.response.body = |{}|", s);
 
-        let responses = multipart::read_multipart_response(&boundary, response_body);
+        let responses = multipart::read_response_body(&boundary, response_body);
 
         let i: Vec<Result<EmailMessage, Error>> = responses
-            .iter()
+            .into_iter()
             .map(|r| {
+                let r = r?;
                 let m = serde_json::from_slice(r.body())?;
-                let m = EmailMessage::from(m)?;
+                let e = EmailMessage::from(m)?;
 
-                Ok(m)
+                Ok(e)
             })
             .collect();
 
@@ -525,7 +535,7 @@ mod multipart {
     }
 
     #[derive(Debug, thiserror::Error)]
-    enum ReadMultipartError {
+    pub enum ReadMultipartError {
         #[error("Can't parse HTTP headers: {0}")]
         Httparse(#[from] httparse::Error),
 
@@ -541,24 +551,13 @@ mod multipart {
 
     /// Given a `multipart/mixed` response body, parse each part of the response
     /// and return each response as hyper's [`Response<Bytes>`](hyper::Response).
-    pub(super) fn read_multipart_response(
+    pub(super) fn read_response_body(
         boundary: &str,
         body: Bytes,
-    ) -> Vec<hyper::Response<Bytes>> {
-        let reader = MultipartReader::new(body, boundary);
-        let mut responses = Vec::new();
-
-        // There should only be Content-Type and Content-Length as the part headers
-        const HEADER_LEN: usize = 2;
-
-        // TODO Use as an iterator + map instead
-        for mut raw_response in reader {
-            let r = parse_multipart_response(raw_response);
-
-            responses.push(r.unwrap());
-        }
-
-        responses
+    ) -> Vec<Result<hyper::Response<Bytes>, ReadMultipartError>> {
+        MultipartReader::new(body, boundary)
+            .map(parse_multipart_response)
+            .collect()
     }
 
     /// Given a part of a `multipart/mixed` body, parse the part headers and its body
