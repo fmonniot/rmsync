@@ -273,7 +273,7 @@ impl GcpClient {
         let s = String::from_utf8(s).unwrap();
 
         println!("batch.response.boundary = {}", boundary);
-        println!("batch.response.body = {}", s);
+        //println!("batch.response.body = |{}|", s);
 
         let responses = multipart::read_multipart_response(&boundary, response_body);
 
@@ -309,7 +309,7 @@ pub enum DatastoreLookup {
 /// A simplified version of gmail's [Message](gmail::Message)
 #[derive(Debug)]
 pub struct EmailMessage {
-    from: String,
+    pub from: String,
     //body: String,
 }
 
@@ -795,7 +795,7 @@ mod multipart {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct HistoryId(String);
+pub struct HistoryId(pub String);
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct MessageId(String);

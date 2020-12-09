@@ -11,7 +11,7 @@ use futures::stream::{FuturesUnordered, StreamExt as _};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
-use log::{error, info};
+use log::{debug, error, info};
 use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -102,17 +102,22 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, notification.history_id)
+        .gmail_users_history_list(&user_token, gcp::HistoryId("31862392".to_string()))
         .await?;
 
     info!("Will fetch {} emails", history.len());
 
+    // TODO Here we need to actually fetch all of those, so batch by 100 requests and then rebuild
     let res = cfg
         .gcp
-        .gmail_get_messages(&user_token, history.into_iter().take(3))
+        .gmail_get_messages(&user_token, history.into_iter().skip(40).take(100))
         .await;
+    
+    debug!("batch response: {:?}", res);
 
-    info!("batch response: {:?}", res);
+    let emails: Vec<_> = res?.into_iter().filter(|e| &e.from == "FanFiction <bot@fanfiction.com>").collect();
+
+    info!("FanFiction emails found: {:?}", emails);
 
     // TODO I might not want to make all the calls at once and race them
     // TODO Or I might implement the batching APIs (if I can understand them, geez Google make everything complicated…)
