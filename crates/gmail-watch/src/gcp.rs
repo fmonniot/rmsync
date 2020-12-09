@@ -475,7 +475,7 @@ mod identity {
 #[allow(unused)]
 mod multipart {
 
-    use bytes::{Buf,Bytes};
+    use bytes::{Buf, Bytes};
     use httparse::{parse_headers, EMPTY_HEADER};
     use log::{debug, error};
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
@@ -524,13 +524,19 @@ mod multipart {
             .body(body)
     }
 
-
     #[derive(Debug, thiserror::Error)]
     enum ReadMultipartError {
         #[error("Can't parse HTTP headers: {0}")]
         Httparse(#[from] httparse::Error),
+
+        #[error("HTTP malformed error: {0}")]
+        Http(#[from] hyper::http::Error),
+
         #[error("No status code was found in the response")]
         NoStatusCodeDefined,
+
+        #[error("Partial header on a finite body, something went wrong (in {0})")]
+        PartialHeaders(&'static str),
     }
 
     /// Given a `multipart/mixed` response body, parse each part of the response
@@ -549,61 +555,64 @@ mod multipart {
         for mut raw_response in reader {
             let r = parse_multipart_response(raw_response);
 
-            responses.push(r);
+            responses.push(r.unwrap());
         }
 
         responses
     }
 
-    // TODO Error management
-    
     /// Given a part of a `multipart/mixed` body, parse the part headers and its body
     /// if the `Content-Type` is `application/html`.
-    fn parse_multipart_response(mut raw_response: Bytes) -> hyper::Response<Bytes> {
+    fn parse_multipart_response(
+        mut raw_response: Bytes,
+    ) -> Result<hyper::Response<Bytes>, ReadMultipartError> {
         // There should only be Content-Type and Content-Length as the part headers
         const HEADER_LEN: usize = 2;
 
         // We just want to find out the end of the part headers, so we read them using
         // httparse::parse_headers and discard the result (we know there are only two of them)
         let mut raw_headers = [EMPTY_HEADER; HEADER_LEN];
-        match parse_headers(&raw_response, &mut raw_headers).unwrap() {
+        match parse_headers(&raw_response, &mut raw_headers)? {
             httparse::Status::Partial => {
-                panic!("Partial header on a finite body, something went wrong")
+                return Err(ReadMultipartError::PartialHeaders("part headers"));
             }
             httparse::Status::Complete((end_headers, _)) => {
                 raw_response.advance(end_headers);
 
                 // TODO Fails if Content-Type isn't application/html
 
-                let (builder, body_position) = parse_http_response(raw_response.clone()).unwrap();
+                let (builder, body_position) = parse_http_response(raw_response.clone())?;
 
                 raw_response.advance(body_position);
 
-                let b = builder.body(raw_response).unwrap();
+                let b = builder.body(raw_response)?;
 
-                return b;
+                return Ok(b);
             }
         }
     }
 
-    // TODO Error management
     /// Parse the status-line and headers of a HTTP response returning a hyper's builder
     /// populated with the parsed information as well as the position within the `Bytes`
     /// where the response body start.
-    fn parse_http_response(raw_response: Bytes) -> Result<(hyper::http::response::Builder, usize), ReadMultipartError> {
+    fn parse_http_response(
+        raw_response: Bytes,
+    ) -> Result<(hyper::http::response::Builder, usize), ReadMultipartError> {
         let r: &[u8] = &raw_response;
         let mut h = [httparse::EMPTY_HEADER; 10];
         let mut response = httparse::Response::new(&mut h);
-        
+
         let body_position = match response.parse(r)? {
             httparse::Status::Partial => {
-                error!("Partial header on a finite body, something went wrong");
-                0
+                return Err(ReadMultipartError::PartialHeaders("inner response"))
             }
             httparse::Status::Complete(p) => p,
         };
 
-        let mut builder = hyper::Response::builder().status(response.code.ok_or(ReadMultipartError::NoStatusCodeDefined)?);
+        let status = response
+            .code
+            .ok_or(ReadMultipartError::NoStatusCodeDefined)?;
+        let mut builder = hyper::Response::builder().status(status);
 
         for h in response.headers {
             builder = builder.header(h.name, h.value);
@@ -725,7 +734,6 @@ mod multipart {
         }
     }
 
-
     #[cfg(test)]
     #[test]
     fn test_parse_http_response_parts() {
@@ -770,7 +778,7 @@ mod multipart {
         let raw_response = [headers, body].concat();
         let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
 
-        let response = parse_multipart_response(raw_response);
+        let response = parse_multipart_response(raw_response).expect("can parse response");
 
         let ok = hyper::StatusCode::from_u16(200).unwrap();
         let ct_value = hyper::header::HeaderValue::from_static("application/json");
@@ -787,7 +795,7 @@ mod multipart {
     #[test]
     fn test_read_parts() {
         let boundary = "boundary";
-        let raw =  "\r\n--boundary\r\n\
+        let raw = "\r\n--boundary\r\n\
                 Content-ID: response-{id1}\n\
                 \n\
                 HTTP/1.1 200 OK\n\
