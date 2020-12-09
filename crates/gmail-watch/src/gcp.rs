@@ -37,6 +37,7 @@ pub enum Error {
     InvalidDatastoreContent(String),
     EmailWithoutFromField,
     MissingValidMultipartContentType,
+    NoBodyToDecode, // when a gmail::Message.data field is absent and tried to decode it
 }
 
 // TODO See if it's still needed with thiserror or anyhow
@@ -434,7 +435,7 @@ mod gmail {
     #[derive(Debug, Deserialize, PartialEq)]
     pub(super) struct MessagePartBody {
         size: u32,
-        data: String,
+        data: Option<String>, // TODO This is apparently optional in some cases
     }
 
     impl MessagePartBody {
@@ -442,8 +443,8 @@ mod gmail {
             if self.size == 0 {
                 Err(base64::DecodeError::InvalidLength)?;
             }
-
-            let bytes = base64::decode(&self.data)?;
+            let data = self.data.as_ref().ok_or(super::Error::NoBodyToDecode)?;
+            let bytes = base64::decode(data)?;
             let s = String::from_utf8(bytes)?;
 
             Ok(s)
