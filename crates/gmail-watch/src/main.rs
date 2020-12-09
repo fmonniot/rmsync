@@ -107,9 +107,16 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     info!("Will fetch {} emails", history.len());
 
+    let res = cfg.gcp.gmail_get_messages(&user_token, history.into_iter().take(3)).await;
+
+    info!("batch response: {:?}", res);
+
     // TODO I might not want to make all the calls at once and race them
     // TODO Or I might implement the batching APIs (if I can understand them, geez Google make everything complicated…)
     // Fetch all emails in parallel
+
+    // Start playing with batch api instead of manually calling the API
+    /*
     let futures: FuturesUnordered<_> = history
         .iter()
         .map(|h| cfg.gcp.gmail_get_message(h))
@@ -126,6 +133,7 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
     }
 
     println!("fetched emails: {:#?}", emails);
+    */
 
     let _ = fetch_mail_content().await?;
 

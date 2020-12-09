@@ -1,0 +1,44 @@
+--batch_foobarbaz
+Content-Type: application/http
+Content-ID: response-{id}
+
+HTTP/1.1 200 OK
+Content-Type application/json
+Content-Length: response_part_1_content_length
+ETag: "etag/pony"
+
+{
+  "kind": "farm#animal",
+  "etag": "etag/pony",
+  "selfLink": "/farm/v1/animals/pony",
+  "animalName": "pony",
+  "animalAge": 34,
+  "peltColor": "white"
+}
+
+--batch_foobarbaz
+Content-Type: application/http
+Content-ID: <response-item2:12930812@barnyard.example.com>
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: response_part_2_content_length
+ETag: "etag/sheep"
+
+{
+  "kind": "farm#animal",
+  "etag": "etag/sheep",
+  "selfLink": "/farm/v1/animals/sheep",
+  "animalName": "sheep",
+  "animalAge": 5,
+  "peltColor": "green"
+}
+
+--batch_foobarbaz
+Content-Type: application/http
+Content-ID: <response-item3:12930812@barnyard.example.com>
+
+HTTP/1.1 304 Not Modified
+ETag: "etag/animals"
+
+--batch_foobarbaz--

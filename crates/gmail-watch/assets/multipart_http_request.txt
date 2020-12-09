@@ -1,0 +1,35 @@
+POST /batch/farm/v1 HTTP/1.1
+Authorization: Bearer your_auth_token
+Host: www.googleapis.com
+Content-Type: multipart/mixed; boundary=batch_foobarbaz
+Content-Length: total_content_length
+
+--batch_foobarbaz
+Content-Type: application/http
+Content-ID: <item1:12930812@barnyard.example.com>
+
+GET /farm/v1/animals/pony
+
+--batch_foobarbaz
+Content-Type: application/http
+Content-ID: <item2:12930812@barnyard.example.com>
+
+PUT /farm/v1/animals/sheep
+Content-Type: application/json
+Content-Length: part_content_length
+If-Match: "etag/sheep"
+
+{
+  "animalName": "sheep",
+  "animalAge": "5"
+  "peltColor": "green",
+}
+
+--batch_foobarbaz
+Content-Type: application/http
+Content-ID: <item3:12930812@barnyard.example.com>
+
+GET /farm/v1/animals
+If-None-Match: "etag/animals"
+
+--batch_foobarbaz--

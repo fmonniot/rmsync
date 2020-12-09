@@ -3,6 +3,7 @@ use gcp_auth::Token;
 use log::{debug, warn};
 use serde::Deserialize;
 use serde_json::json;
+use mime::Mime;
 
 // TODO It'd be nice to share the AuthenticationManager and reqwest::Client between connections
 pub async fn make_client(
@@ -35,6 +36,7 @@ pub enum Error {
 
     InvalidDatastoreContent(String),
     EmailWithoutFromField,
+    MissingValidMultipartContentType,
 }
 
 // TODO See if it's still needed with thiserror or anyhow
@@ -233,6 +235,36 @@ impl GcpClient {
             }
         }
     }
+
+    pub async fn gmail_get_messages<I: Iterator<Item = MessageId>>(&self, token: &UserToken, message_ids: I) -> Result<Vec<EmailMessage>, Error> {
+        debug!("Fetching messages in batch");
+        use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
+
+
+        let req = self.http.post("https://www.googleapis.com/batch/gmail/v1")
+            .bearer_auth(token.as_str());
+        
+        let res = multipart::gmail_get_messages_batch(req, message_ids.map(|i| i.0.clone())).send().await?;
+
+        let h = res.headers().get(CONTENT_TYPE).ok_or(Error::MissingValidMultipartContentType)?;
+
+        println!("content-type: {:?}", h);
+        let mime = h.to_str().unwrap().parse::<Mime>().unwrap(); // TODO Errors
+
+        
+        // Might need convertion, let's see what httparse returns us
+        let boundary = mime.get_param("boundary").unwrap().to_string(); // TODO Errors
+
+        // content-type: "multipart/mixed; boundary=batch_47XVjsIfPXGWk00LSpbABytFrk9NfNT3"
+
+        let response_body = res.text().await?;
+        
+        println!("batch.response.body = {}", response_body);
+
+        multipart::read_multipart_response(&boundary, &response_body);
+
+        Ok(vec![])
+    }
 }
 
 #[derive(Debug)]
@@ -381,6 +413,91 @@ mod identity {
         pub(super) expires_in: u32,
         pub(super) token_type: String,
         pub(super) scope: String,
+    }
+}
+
+/// A trim down implemenation of `multipart/` request and responses.
+///
+/// It handles enough to make batch request to GMail. It is a non-goal
+/// to handle all the complexity of the multipart specification.
+#[allow(unused)]
+mod multipart {
+
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
+    use reqwest::{Client, RequestBuilder, Response};
+    use bytes::Bytes;
+
+    // Because implementing a generic http encoder is way too much rust (the one in hyper
+    // is 100+ lines long and manage a lot of edge cases). Given that all I need is to include
+    // the snippet
+    // ```txt
+    // --batch_foobarbaz
+    // Content-Type: application/http
+    // Content-ID: <item1:12930812@barnyard.example.com>
+    //
+    // GET /farm/v1/animals/pony
+    //
+    // ...
+    // ```
+    // I'm just going to do it manually. It would be helpful if in the future there would
+    // be a `httpencode` crate, like there is a `httparse` one
+    pub(super) fn gmail_get_messages_batch<I: Iterator<Item = String>>(builder: RequestBuilder, ids: I) -> RequestBuilder {
+        const BOUNDARY: &str = "batch_foobarbaz";
+        let mut body = Vec::new();
+
+        for id in ids {
+            let string = format!(
+                "--{boundary}\n\
+              Content-Type: application/http\n\
+              Content-Id: {id}\n\
+              \n\
+              GET /gmail/v1/users/me/messages/{id}\n\
+              \n",
+                boundary = BOUNDARY,
+                id = id,
+            );
+            body.extend(string.as_bytes());
+        }
+
+        body.extend(format!("--{}--", BOUNDARY).as_bytes());
+
+        println!("request.body = {}", String::from_utf8(body.clone()).unwrap());
+
+        builder
+            .header(CONTENT_TYPE, "multipart/mixed; boundary=batch_foobarbaz")
+            .header(CONTENT_LENGTH, body.len())
+            .body(body)
+    }
+
+
+    // we should really do something at the bytes level, looking for known pattern and separating
+    // into bytes in the middle
+    pub(super) fn read_multipart_response(boundary: &str, body: &String) {
+
+        for (idx, part) in body.split(&format!("--{}", boundary)).enumerate() {
+            println!("part size: {}", part.len())
+        }
+
+    }
+
+    // Tests, will probably move to a submodule
+    use std::path::PathBuf;
+
+    fn asset(p: &str) -> String {
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("assets");
+        d.push(p);
+
+        std::fs::read_to_string(d).unwrap()
+    }
+
+    //#[test]
+    #[tokio::test]
+    async fn test_example_request() {
+        let response = asset("multipart_http_response.txt");
+        let response = Bytes::from(response);
+        
+        read_multipart_response(&"batch_foobarbaz", &response);
     }
 }
 
