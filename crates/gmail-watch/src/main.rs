@@ -255,7 +255,6 @@ mod pubsub {
     #[derive(Debug, Deserialize)]
     pub struct Message {
         data: String,
-        message_id: String,
     }
 
     pub fn deserialize<T: DeserializeOwned, B: Buf>(buf: B) -> Result<T, Error> {
@@ -279,14 +278,13 @@ async fn http_handler(
     let notification = match pubsub::deserialize(whole_body) {
         Ok(data) => data,
         Err(error) => {
-            let req_id = uuid::Uuid::new_v4().to_string();
             warn!(
-                "Can't the read the request body because of error: {:?} (Req-Id: {})",
-                error, req_id
+                "Can't the read the request body because of error: {:?}",
+                error
             );
             return Ok(Response::builder()
                 .status(400)
-                .body(format!("{{\"request-id\":\"{}\"}}", req_id).into())
+                .body(Body::empty())
                 .unwrap());
         }
     };
@@ -302,7 +300,7 @@ async fn http_handler(
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    pretty_env_logger::init();
+    pretty_env_logger::init(); // use env_logger directly and see if colors are supported
 
     let configuration = Arc::new(Configuration::from_env().await?);
 
@@ -323,7 +321,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
-    let addr = ([127, 0, 0, 1], configuration.port).into();
+    let addr = ([0, 0, 0, 0], configuration.port).into();
     let server = Server::bind(&addr).serve(make_svc);
 
     info!("Listening on http://{}", addr);
