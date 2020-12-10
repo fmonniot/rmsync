@@ -104,7 +104,7 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, gcp::HistoryId("31910951".to_string()))
+        .gmail_users_history_list(&user_token, notification.history_id)
         .await?;
 
     info!("Will fetch {} emails", history.len());
