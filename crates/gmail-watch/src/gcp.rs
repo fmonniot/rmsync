@@ -343,6 +343,7 @@ mod gmail {
     #[derive(Debug, Deserialize, PartialEq)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct HistoryListResponse {
+        #[serde(default)]
         pub(super) history: Vec<History>,
         next_page_token: Option<String>,
         history_id: String,
