@@ -254,42 +254,18 @@ impl GcpClient {
         debug!("Fetching messages in batch");
         use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
 
-        let req = self
+        let request = self
             .http
             .post("https://www.googleapis.com/batch/gmail/v1")
             .bearer_auth(token.as_str());
 
-        let res = multipart::gmail_get_messages_batch(req, message_ids.map(|i| i.0.clone()))
-            .send()
-            .await?;
+        let response =
+            multipart::gmail_get_messages_batch(request, message_ids.map(|i| i.0.clone()))
+                .send()
+                .await?;
 
-
-        // TODO Put all the multipart manipulation in a multipart::read_response function instead of here
-
-        let h = res
-            .headers()
-            .get(CONTENT_TYPE)
-            .ok_or(Error::MissingValidMultipartContentType)?;
-
-        println!("content-type: {:?}", h);
-        let mime = h.to_str().unwrap().parse::<Mime>().unwrap(); // TODO Errors
-
-        // Might need convertion, let's see what httparse returns us
-        let boundary = mime.get_param("boundary").unwrap().to_string(); // TODO Errors
-
-        // content-type: "multipart/mixed; boundary=batch_47XVjsIfPXGWk00LSpbABytFrk9NfNT3"
-
-        let response_body = res.bytes().await?;
-
-        let s = response_body.clone().to_vec();
-        let s = String::from_utf8(s).unwrap();
-
-        println!("batch.response.boundary = {}", boundary);
-        //println!("batch.response.body = |{}|", s);
-
-        let responses = multipart::read_response_body(&boundary, response_body);
-
-        let i: Vec<Result<EmailMessage, Error>> = responses
+        let responses: Vec<Result<EmailMessage, Error>> = multipart::read_response(response)
+            .await?
             .into_iter()
             .map(|r| {
                 let r = r?;
@@ -301,8 +277,8 @@ impl GcpClient {
             .collect();
 
         let mut messages = Vec::new();
-        for e in i {
-            match e {
+        for r in responses {
+            match r {
                 Ok(e) => messages.push(e),
                 Err(e) => warn!("Couldn't parse email: {:?}", e),
             }
@@ -488,6 +464,7 @@ mod multipart {
     use bytes::{Buf, Bytes};
     use httparse::{parse_headers, EMPTY_HEADER};
     use log::{debug, error};
+    use mime::Mime;
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
     use reqwest::{Client, RequestBuilder, Response};
 
@@ -542,14 +519,55 @@ mod multipart {
         #[error("HTTP malformed error: {0}")]
         Http(#[from] hyper::http::Error),
 
+        #[error("Can't parse the MIME type: {0}")]
+        Mime(#[from] mime::FromStrError),
+
+        #[error("Can't read the header value as a string: {0}")]
+        ReadHeaderValue(#[from] hyper::http::header::ToStrError),
+
+        #[error("Can't read the HTTP response: {0}")]
+        Reqwest(#[from] reqwest::Error),
+
         #[error("No status code was found in the response")]
         NoStatusCodeDefined,
 
         #[error("Partial header on a finite body, something went wrong (in {0})")]
         PartialHeaders(&'static str),
+
+        #[error("The received response doesn't have a Content-Type header")]
+        MissingContentType,
+
+        #[error("The received response doesn't have a boundary delimiter")]
+        NoBoundary,
     }
 
     type ReadResult<T> = Result<T, ReadMultipartError>;
+
+    /// Given a response, and only if it has a `multipart/mixed` content type
+    /// with a boundary set, parse the response body and return the individual
+    /// responses (as hyper [`Response`](hyper::Response) not reqwest [`Response`](reqwest::Response)).
+    pub(super) async fn read_response(
+        response: reqwest::Response,
+    ) -> ReadResult<Vec<ReadResult<hyper::Response<Bytes>>>> {
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .ok_or(ReadMultipartError::MissingContentType)?
+            .to_str()?
+            .parse::<Mime>()?;
+
+        // Extract the boundary separator from the Content-Type
+        let boundary = content_type
+            .get_param("boundary")
+            .ok_or(ReadMultipartError::NoBoundary)?
+            .to_string();
+
+        let response_body = response.bytes().await?;
+
+        debug!("multipart.response.boundary = {}", boundary);
+
+        Ok(read_response_body(&boundary, response_body))
+    }
 
     /// Given a `multipart/mixed` response body, parse each part of the response
     /// and return each response as hyper's [`Response<Bytes>`](hyper::Response).
@@ -564,9 +582,7 @@ mod multipart {
 
     /// Given a part of a `multipart/mixed` body, parse the part headers and its body
     /// if the `Content-Type` is `application/html`.
-    fn parse_multipart_response(
-        mut raw_response: Bytes,
-    ) -> ReadResult<hyper::Response<Bytes>> {
+    fn parse_multipart_response(mut raw_response: Bytes) -> ReadResult<hyper::Response<Bytes>> {
         // There should only be Content-Type and Content-Length as the part headers
         const HEADER_LEN: usize = 2;
 
