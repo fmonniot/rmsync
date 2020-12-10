@@ -12,6 +12,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
 use log::{debug, error, info};
+use regex::Regex;
 use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ enum Error {
     Io(std::io::Error),
     Gcp(gcp::Error),
     Token(tokens::TokenError),
+    InvalidEmailContent,
 }
 
 impl From<fanfictionnet::Error> for Error {
@@ -123,75 +125,56 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
         .filter(|e| &e.from == "FanFiction <bot@fanfiction.com>")
         .collect();
 
-    info!("FanFiction emails found: {:?}", emails);
+    info!("Found {} FanFiction.Net emails", emails.len());
 
-    // TODO I might not want to make all the calls at once and race them
-    // TODO Or I might implement the batching APIs (if I can understand them, geez Google make everything complicated…)
-    // Fetch all emails in parallel
-
-    // Start playing with batch api instead of manually calling the API
-    /*
-    let futures: FuturesUnordered<_> = history
-        .iter()
-        .map(|h| cfg.gcp.gmail_get_message(h))
-        .collect();
-    let email_results: Vec<_> = futures.collect().await;
-
-    // Keep the successes and discards the failures (with a warn)
-    let mut emails = Vec::new();
-    for r in email_results {
-        match r {
-            Ok(e) => emails.push(e),
-            Err(e) => warn!("Couldn't fetch email. Error = {:?}", e),
-        }
+    if emails.len() <= 0 {
+        return Ok(());
     }
 
-    println!("fetched emails: {:#?}", emails);
-    */
-
-    let _ = fetch_mail_content().await?;
-
-    // While I'm developing the Google Cloud side of things,
-    // let's not create resources on the remarkable cloud.
-    return Ok(());
-
-    // Will come from the mail content
-    let sid = fanfictionnet::new_story_id(4985743);
-    let chapter = fanfictionnet::new_chapter_number(38);
-
-    let chapter = fanfictionnet::fetch_story_chapter(sid, chapter).await?;
-
-    let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
-    let epub = make_epub(chapter).await?;
-
     let mut rm_cloud = rmcloud::make_client()?;
-
     rm_cloud.renew_token().await?;
 
-    rm_cloud
-        .upload_epub(&epub, &file_name, DocumentId::empty())
-        .await?;
+    for email in emails {
+        let content = email.body.ok_or(Error::InvalidEmailContent)?;
+        let (story_id, chapter) = parse_ffn_email(&content).ok_or(Error::InvalidEmailContent)?;
 
-    // TODO Evaluate if listing all documents before upload is necessary, and if it is,
-    // how (or if) can I cache this result (speed up, rmcloud usage, gcp costs, etc…)
-    //
-    let documents = rm_cloud.list_documents().await?;
-    let documents = documents
-        .iter()
-        .map(|d| {
-            format!(
-                "Document(name:'{}', type:{}, {:?})",
-                d.visible_name, d.tpe, d.id
-            )
-        })
-        .collect::<Vec<_>>();
-    println!("Documents: {:#?}", documents);
+        let chapter = fanfictionnet::fetch_story_chapter(story_id, chapter).await?;
+
+        let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
+        let epub = make_epub(chapter).await?;
+
+        debug!("uploading epub: {}", file_name);
+
+        // Going blind on this upload. Let's assume there won't be any conflict for now
+        // and see how it develops over time.
+        rm_cloud
+            .upload_epub(&epub, &file_name, DocumentId::empty())
+            .await?;
+    }
 
     Ok(())
 }
 
 async fn fetch_mail_content() -> Result<(), Error> {
     Ok(())
+}
+
+fn parse_ffn_email(content: &str) -> Option<(fanfictionnet::StoryId, fanfictionnet::ChapterNum)> {
+    lazy_static::lazy_static! {
+        static ref RE: Regex = Regex::new("fanfiction\\.net/s/(\\d+)/(\\d+)/").unwrap();
+    }
+
+    RE.captures(content).map(|cap| {
+        // The captures matched the regex, so they are numbers. Still, the convertion can panic
+        // if the integers are too big for their containers.
+        let id = cap[1].parse::<u32>().unwrap();
+        let ch = cap[2].parse::<u16>().unwrap();
+
+        (
+            fanfictionnet::new_story_id(id),
+            fanfictionnet::new_chapter_number(ch),
+        )
+    })
 }
 
 async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
@@ -380,5 +363,20 @@ impl Configuration {
         let crypto = tokens::Cryptographer::new(&google_client_secret)?;
 
         Ok(Configuration { port, gcp, crypto })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::parse_ffn_email;
+    use fanfictionnet::{new_chapter_number, new_story_id};
+
+    #[test]
+    fn correctly_parse_email() {
+        let content = "New chapter from AppoApples,\r\n\r\nSignificant Brain Damage\r\nChapter 31: The Twins of Alderaan\r\n\r\nhttps://www.fanfiction.net/s/13587604/31/Significant-Brain-Damage\r\n\r\nStar Wars\r\n\r\nWords: 3,479\r\nGenre: Drama/Humor\r\nRated: T\r\nCharacter: Luke S., Obi-Wan K., Captain Rex, Ahsoka T.\r\n\r\nSummary: Luke Skywalker finds himself in the past as Anakin Skywalker. Obi-Wan finds himself retraining his old apprentice who has permanent amnesia while also taking on Anakin\'s Padawan, being a General, a Council member -during a Galactic Civil War, and fighting for a Republic he\'s beginning to lose faith in. Clone Wars, no slash, no paradox, no easy fix it.\r\n\r\nFanFiction https://www.fanfiction.net\r\n\r\nFollow us on twitter @ https://twitter.com/fictionpress\r\n\r\n";
+        let expected = (new_story_id(13587604), new_chapter_number(31));
+
+        assert_eq!(parse_ffn_email(content), Some(expected))
     }
 }

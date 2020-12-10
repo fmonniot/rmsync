@@ -287,7 +287,7 @@ pub enum DatastoreLookup {
 #[derive(Debug)]
 pub struct EmailMessage {
     pub from: String,
-    body: Option<String>,
+    pub body: Option<String>,
 }
 
 impl EmailMessage {
