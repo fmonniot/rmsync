@@ -7,7 +7,7 @@ use epub_builder::EpubContent;
 use epub_builder::ReferenceType;
 use epub_builder::ZipLibrary;
 use fanfictionnet::Chapter;
-use futures::stream::{FuturesUnordered, StreamExt as _};
+use futures::stream::{StreamExt as _};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
@@ -152,10 +152,6 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
             .await?;
     }
 
-    Ok(())
-}
-
-async fn fetch_mail_content() -> Result<(), Error> {
     Ok(())
 }
 

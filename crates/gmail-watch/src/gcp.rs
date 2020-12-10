@@ -1,7 +1,6 @@
 use crate::tokens::UserToken;
 use gcp_auth::Token;
 use log::{debug, warn};
-use mime::Mime;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -37,7 +36,6 @@ pub enum Error {
 
     InvalidDatastoreContent(String),
     EmailWithoutFromField,
-    MissingValidMultipartContentType,
     NoBodyToDecode, // when a gmail::Message.data field is absent and tried to decode it
 }
 
@@ -206,41 +204,13 @@ impl GcpClient {
     }
 
     // https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get
-    pub async fn gmail_get_message(&self, message_id: &MessageId) -> Result<EmailMessage, Error> {
-        debug!("Fetching message {}", message_id.0);
-
-        let res = self
-            .http
-            .get(&format!(
-                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}",
-                id = message_id.0
-            ))
-            .bearer_auth(self.token.as_str())
-            .send()
-            .await?;
-
-        let status = res.status();
-        let body = res.text().await?;
-
-        match serde_json::from_str::<gmail::Message>(&body) {
-            Ok(result) => EmailMessage::from(result),
-            Err(error) => {
-                warn!(
-                    "Couldn't fetch GMail message. status={} Response body =\n{}",
-                    status, body
-                );
-                Err(error.into())
-            }
-        }
-    }
-
+    // https://developers.google.com/gmail/api/guides/batch
     pub async fn gmail_get_messages<I: Iterator<Item = MessageId>>(
         &self,
         token: &UserToken,
         message_ids: I,
     ) -> Result<Vec<EmailMessage>, Error> {
         debug!("Fetching messages in batch");
-        use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
 
         let request = self
             .http
