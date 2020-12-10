@@ -102,20 +102,26 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, gcp::HistoryId("31862392".to_string()))
+        .gmail_users_history_list(&user_token, gcp::HistoryId("31910951".to_string()))
         .await?;
 
     info!("Will fetch {} emails", history.len());
 
-    // TODO Here we need to actually fetch all of those, so batch by 100 requests and then rebuild
-    let res = cfg
-        .gcp
-        .gmail_get_messages(&user_token, history.into_iter().skip(40).take(100))
+    // The Batch APIs can't process more than 100 requests at once, so let's break our queries down if necessary
+    let results: Vec<_> = futures::stream::iter(history)
+        .chunks(100)
+        .then(|chunk| cfg.gcp.gmail_get_messages(&user_token, chunk.into_iter()))
+        .collect()
         .await;
-    
-    debug!("batch response: {:?}", res);
 
-    let emails: Vec<_> = res?.into_iter().filter(|e| &e.from == "FanFiction <bot@fanfiction.com>").collect();
+    // It seems the convertion from Vec<Result to Result<Vec isn't implemented on streams
+    let results: Result<Vec<_>, _> = results.into_iter().collect();
+
+    let emails: Vec<_> = results?
+        .into_iter()
+        .flatten()
+        .filter(|e| &e.from == "FanFiction <bot@fanfiction.com>")
+        .collect();
 
     info!("FanFiction emails found: {:?}", emails);
 
