@@ -6,4 +6,4 @@ docker build -t gcr.io/rmsync/gmail-watch \
 
 docker push gcr.io/rmsync/gmail-watch
 
-gcloud run deploy gmail-watch gcr.io/rmsync/gmail-watch:latest
+gcloud run deploy gmail-watch --image gcr.io/rmsync/gmail-watch:latest --platform managed --region us-central1
