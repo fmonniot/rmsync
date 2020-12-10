@@ -801,7 +801,7 @@ mod multipart {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct HistoryId(pub String);
+pub struct HistoryId(u32);
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct MessageId(String);
