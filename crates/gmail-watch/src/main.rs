@@ -300,7 +300,7 @@ async fn http_handler(
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    pretty_env_logger::init(); // use env_logger directly and see if colors are supported
+    env_logger::init();
 
     let configuration = Arc::new(Configuration::from_env().await?);
 
