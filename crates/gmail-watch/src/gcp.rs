@@ -223,19 +223,7 @@ impl GcpClient {
         let body = res.text().await?;
 
         match serde_json::from_str::<gmail::Message>(&body) {
-            Ok(result) => {
-                let from_header = result
-                    .payload
-                    .headers
-                    .iter()
-                    .find(|h| h.name == "From")
-                    .ok_or(Error::EmailWithoutFromField)?;
-                let from = from_header.value.clone();
-
-                // TODO Find the correct body part and extract the mail's body from it
-
-                Ok(EmailMessage { from })
-            }
+            Ok(result) => EmailMessage::from(result),
             Err(error) => {
                 warn!(
                     "Couldn't fetch GMail message. status={} Response body =\n{}",
@@ -299,7 +287,7 @@ pub enum DatastoreLookup {
 #[derive(Debug)]
 pub struct EmailMessage {
     pub from: String,
-    //body: String,
+    body: Option<String>,
 }
 
 impl EmailMessage {
@@ -312,9 +300,10 @@ impl EmailMessage {
             .ok_or(Error::EmailWithoutFromField)?;
         let from = from_header.value.clone();
 
-        // TODO Find the correct body part and extract the mail's body from it
+        // This assume the message isn't multipart (as ff.net aren't)
+        let body = message.payload.body.decoded_data().ok();
 
-        Ok(EmailMessage { from })
+        Ok(EmailMessage { from, body })
     }
 }
 
