@@ -1016,16 +1016,30 @@ mod tests {
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     #[serde(rename_all = "camelCase")]
+    struct Props {
+        properties: std::collections::HashMap<String, Outer>
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    #[serde(untagged)]
     enum Inner {
-        #[serde(rename(serialize = "string_field"))]
+        #[serde(rename="string_value")]
+        #[serde(rename_all = "camelCase")]
         String {
-            exclude_from_indexes: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            exclude_from_indexes: Option<bool>,
             string_value: String,
         },
+        #[serde(rename ="integer_value")]
+        #[serde(rename_all = "camelCase")]
         Integer {
-            exclude_from_indexes: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            exclude_from_indexes: Option<bool>,
             integer_value: String,
         },
+        #[serde(rename ="array_value")]
+        #[serde(rename_all = "camelCase")]
         Array {
             array_value: InArray,
         }
@@ -1041,12 +1055,58 @@ mod tests {
     fn test_flatten() {
         let out_str = Outer {
             value: Inner::String {
-                exclude_from_indexes: true,
-                string_value: "my_string".to_string()
+                exclude_from_indexes: Some(true),
+                string_value: "LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O".to_string()
+            }
+        };
+        let out_arr = Outer {
+            value: Inner::Array {
+                array_value: InArray {
+                    values: vec![
+                        Outer {
+                            value: Inner::String {
+                                exclude_from_indexes: None,
+                                string_value: "email".to_string()
+                            }
+                        },
+                        Outer {
+                            value: Inner::String {
+                                exclude_from_indexes: None,
+                                string_value: "profile".to_string()
+                            }
+                        }
+                    ]
+                }
             }
         };
 
-        println!("{}", serde_json::to_string(&out_str).unwrap());
+        let mut map = HashMap::new();
+        map.insert("token".to_string(), out_str);
+        map.insert("scopes".to_string(), out_arr);
+        let props = Props {
+            properties: map
+        };
+        println!("{}", serde_json::to_string(&props).unwrap());
+
+
+        let raw = r#"{
+            "properties": {
+                "token": {
+                    "stringValue": "LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O",
+                    "excludeFromIndexes": true
+                },
+                "scopes": {
+                    "arrayValue": {
+                        "values": [
+                            { "stringValue": "email" },
+                            { "stringValue": "profile" }
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        println!("result: {:?}", serde_json::from_str::<Props>(raw));
 
     }
 
