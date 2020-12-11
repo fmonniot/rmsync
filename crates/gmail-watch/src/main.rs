@@ -101,22 +101,13 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     let mut user_token = tokens::UserToken::from_encrypted_blob(&cfg.crypto, &user.token)?;
 
-    user.new_history(&notification.history_id);
-
-    let tx = cfg
-        .gcp
-        .cloud_datastore_update_history_id("my@email.io", &user)
-        .await;
-    info!("Update history id result: {:?}", tx);
-
-    return Ok(());
 
     // Might be skippable within the first hours after login, but otherwise always required
     cfg.gcp.refresh_user_token(&mut user_token).await?;
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, notification.history_id)
+        .gmail_users_history_list(&user_token, &notification.history_id)
         .await?;
 
     info!("Will fetch {} emails", history.len());
@@ -139,30 +130,37 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     info!("Found {} FanFiction.Net emails", emails.len());
 
-    if emails.len() <= 0 {
-        return Ok(());
-    }
-
-    let mut rm_cloud = rmcloud::make_client()?;
-    rm_cloud.renew_token().await?;
-
-    for email in emails {
-        let content = email.body.ok_or(Error::InvalidEmailContent)?;
-        let (story_id, chapter) = parse_ffn_email(&content).ok_or(Error::InvalidEmailContent)?;
-
-        let chapter = fanfictionnet::fetch_story_chapter(story_id, chapter).await?;
-
-        let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
-        let epub = make_epub(chapter).await?;
-
-        debug!("uploading epub: {}", file_name);
-
-        // Going blind on this upload. Let's assume there won't be any conflict for now
-        // and see how it develops over time.
-        rm_cloud
+    // Only interact with the remarkable cloud if we are going to upload some documents
+    if emails.len() > 0 {
+        let mut rm_cloud = rmcloud::make_client()?;
+        rm_cloud.renew_token().await?;
+        
+        for email in emails {
+            let content = email.body.ok_or(Error::InvalidEmailContent)?;
+            let (story_id, chapter) = parse_ffn_email(&content).ok_or(Error::InvalidEmailContent)?;
+            
+            let chapter = fanfictionnet::fetch_story_chapter(story_id, chapter).await?;
+            
+            let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
+            let epub = make_epub(chapter).await?;
+            
+            debug!("uploading epub: {}", file_name);
+            
+            // Going blind on this upload. Let's assume there won't be any conflict for now
+            // and see how it develops over time.
+            rm_cloud
             .upload_epub(&epub, &file_name, DocumentId::empty())
             .await?;
+        }
     }
+
+
+    user.new_history(&notification.history_id);
+
+    cfg
+        .gcp
+        .cloud_datastore_update_history_id(&notification.email_address, &user)
+        .await?;
 
     Ok(())
 }

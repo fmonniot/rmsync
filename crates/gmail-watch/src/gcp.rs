@@ -216,7 +216,7 @@ impl GcpClient {
     pub async fn gmail_users_history_list(
         &self,
         token: &UserToken,
-        history_id: HistoryId,
+        history_id: &HistoryId,
     ) -> Result<Vec<MessageId>, Error> {
         debug!("Fetching user history list");
 
@@ -301,15 +301,14 @@ impl DatastoreUser {
         let token = entity
             .properties
             .get("token")
-            .and_then(|v| v.string_value.as_ref())
-            .cloned()
+            .and_then(|v| v.as_string())
             .ok_or(Error::InvalidDatastoreContent(
                 "Missing token in datastore entity".to_string(),
             ))?;
 
         let scopes: Vec<String> = entity.properties.get("scopes")
-            .and_then(|v| v.array_value.as_ref())
-            .map(|a| a.values.iter().flat_map(|v| v.string_value.as_ref()).cloned().collect())
+            .and_then(|v| v.as_array())
+            .map(|a| a.values.iter().flat_map(|v| v.as_string()).collect())
             .ok_or(Error::InvalidDatastoreContent(
                 "Missing scopes in datastore entity".to_string(),
             ))?;
@@ -329,10 +328,10 @@ impl DatastoreUser {
     fn as_entity(&self, key: datastore::Key) -> datastore::Entity {
         let mut properties = std::collections::HashMap::new();
         
-        properties.insert("token".to_string(), datastore::Value::new_string(&self.token));
-        properties.insert("scopes".to_string(), datastore::Value::new_array(self.scopes.iter().map(|s| datastore::Value::new_string(s))));
+        properties.insert("token".to_string(), datastore::Value::new_string(&self.token, Some(true)));
+        properties.insert("scopes".to_string(), datastore::Value::new_array(self.scopes.iter().map(|s| datastore::Value::new_string(s, Some(true)))));
         if let Some(id) = self.last_known_history_id {
-            properties.insert("history_id".to_string(), datastore::Value::new_integer(id));
+            properties.insert("history_id".to_string(), datastore::Value::new_integer(id, Some(true)));
         }
         
         datastore::Entity {
@@ -376,7 +375,6 @@ mod datastore {
     use std::collections::HashMap;
 
     /// An helper to make the key we use in this project
-    // TODO Return a Key instead ?
     pub(super) fn key(email: &str, project_id: &str) -> Key {
         Key {
             partition_id: PartitionId {
@@ -408,6 +406,9 @@ mod datastore {
         pub(super) cursor: Option<String>,
     }
 
+
+    // Common structures (entity, key, values)
+
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     pub(super) struct Entity {
         pub(super) key: Key,
@@ -436,53 +437,88 @@ mod datastore {
         pub(super) name: String,
     }
 
-
-    // TODO value field should actually be an enum and flatten it with serde
-    // because we can only have one of those fields at the same time
-    #[derive(Debug, Deserialize, PartialEq, Default, Serialize)]
-    #[serde(rename_all = "camelCase")]
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     pub(super) struct Value {
-        // metadata
-        #[serde(skip_deserializing)]
-        //#[serde(skip_serializing_if = "ser_exclude_index")]
-        exclude_from_indexes: bool,
-        // values
-        pub(super) string_value: Option<String>,
-        pub(super) integer_value: Option<String>,
-        pub(super) array_value: Option<ArrayValue>,
+        #[serde(flatten)]
+        value: ValueField,
     }
 
     impl Value {
-        pub(super) fn new_integer(v: u32) -> Value {
+        pub(super) fn new_integer(v: u32, exclude_from_indexes: Option<bool>) -> Value {
             Value {
-                exclude_from_indexes: true,
-                integer_value: Some(v.to_string()),
-                ..Default::default()
+                value: ValueField::Integer {
+                    exclude_from_indexes,
+                    integer_value: v.to_string(),
+                }
             }
         }
 
-        pub(super) fn new_string(v: &str) -> Value {
+        pub(super) fn new_string(v: &str, exclude_from_indexes: Option<bool>) -> Value {
             Value {
-                exclude_from_indexes: true,
-                string_value: Some(v.to_string()),
-                ..Default::default()
+                value: ValueField::String {
+                    exclude_from_indexes,
+                    string_value: v.to_string(),
+                }
             }
         }
 
         pub(super) fn new_array<I: Iterator<Item= Value>>(i: I) -> Value {
             Value {
-                exclude_from_indexes: true,
-                array_value: Some(ArrayValue {
-                    values: i.collect()
-                }),
-                ..Default::default()
+                value: ValueField::Array {
+                    array_value: ArrayValue {
+                        values: i.collect()
+                    },
+                }
             }
         }
 
         pub(super) fn as_u32(&self) -> Option<u32> {
-            self.integer_value.as_ref().and_then(|s| s.parse::<u32>().ok())
+            match &self.value {
+                ValueField::Integer { integer_value, ..} => {
+                    integer_value.parse::<u32>().ok()
+                },
+                _ => None,
+            }
         }
 
+        pub(super) fn as_string(&self) -> Option<String> {
+            match &self.value {
+                ValueField::String { string_value, ..} => Some(string_value.clone()),
+                _ => None,
+            }
+        }
+
+        pub(super) fn as_array(&self) -> Option<&ArrayValue> {
+            match &self.value {
+                ValueField::Array { array_value } => Some(array_value),
+                _ => None,
+            }
+        }
+
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(untagged)]
+    enum ValueField {
+        #[serde(rename="string_value")]
+        #[serde(rename_all = "camelCase")]
+        String {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            exclude_from_indexes: Option<bool>,
+            string_value: String,
+        },
+        #[serde(rename ="integer_value")]
+        #[serde(rename_all = "camelCase")]
+        Integer {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            exclude_from_indexes: Option<bool>,
+            integer_value: String,
+        },
+        #[serde(rename ="array_value")]
+        #[serde(rename_all = "camelCase")]
+        Array {
+            array_value: ArrayValue,
+        }
     }
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -490,7 +526,7 @@ mod datastore {
         pub(super) values: Vec<Value>,
     }
 
-    // Beging Transaction
+    // Begin Transaction
 
     #[derive(Debug, Deserialize, PartialEq)]
     pub(super) struct BeginTransactionResponse {
@@ -1005,111 +1041,6 @@ mod tests {
         }
     }
 
-    use serde::{Serialize, Deserialize};
-
-    #[derive(Debug, Deserialize, PartialEq, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Outer {
-        #[serde(flatten)]
-        value: Inner,
-    }
-
-    #[derive(Debug, Deserialize, PartialEq, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Props {
-        properties: std::collections::HashMap<String, Outer>
-    }
-
-    #[derive(Debug, Deserialize, PartialEq, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    #[serde(untagged)]
-    enum Inner {
-        #[serde(rename="string_value")]
-        #[serde(rename_all = "camelCase")]
-        String {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            exclude_from_indexes: Option<bool>,
-            string_value: String,
-        },
-        #[serde(rename ="integer_value")]
-        #[serde(rename_all = "camelCase")]
-        Integer {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            exclude_from_indexes: Option<bool>,
-            integer_value: String,
-        },
-        #[serde(rename ="array_value")]
-        #[serde(rename_all = "camelCase")]
-        Array {
-            array_value: InArray,
-        }
-    }
-
-    #[derive(Debug, Deserialize, PartialEq, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct InArray {
-        values: Vec<Outer>
-    }
-
-    #[test]
-    fn test_flatten() {
-        let out_str = Outer {
-            value: Inner::String {
-                exclude_from_indexes: Some(true),
-                string_value: "LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O".to_string()
-            }
-        };
-        let out_arr = Outer {
-            value: Inner::Array {
-                array_value: InArray {
-                    values: vec![
-                        Outer {
-                            value: Inner::String {
-                                exclude_from_indexes: None,
-                                string_value: "email".to_string()
-                            }
-                        },
-                        Outer {
-                            value: Inner::String {
-                                exclude_from_indexes: None,
-                                string_value: "profile".to_string()
-                            }
-                        }
-                    ]
-                }
-            }
-        };
-
-        let mut map = HashMap::new();
-        map.insert("token".to_string(), out_str);
-        map.insert("scopes".to_string(), out_arr);
-        let props = Props {
-            properties: map
-        };
-        println!("{}", serde_json::to_string(&props).unwrap());
-
-
-        let raw = r#"{
-            "properties": {
-                "token": {
-                    "stringValue": "LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O",
-                    "excludeFromIndexes": true
-                },
-                "scopes": {
-                    "arrayValue": {
-                        "values": [
-                            { "stringValue": "email" },
-                            { "stringValue": "profile" }
-                        ]
-                    }
-                }
-            }
-        }"#;
-
-        println!("result: {:?}", serde_json::from_str::<Props>(raw));
-
-    }
-
     #[test]
     fn deserialize_datastore_found() {
         let body = asset("test_datastore_found_response.json");
@@ -1120,14 +1051,14 @@ mod tests {
 
         properties.insert(
             "token".to_string(),
-            datastore::Value::new_string("LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O"),
+            datastore::Value::new_string("LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O", Some(true)),
         );
 
         properties.insert(
             "scopes".to_string(),
             datastore::Value::new_array(vec![
-                datastore::Value::new_string("email"),
-                datastore::Value::new_string("profile"),
+                datastore::Value::new_string("email", None),
+                datastore::Value::new_string("profile", None),
             ].into_iter()),
         );
 
