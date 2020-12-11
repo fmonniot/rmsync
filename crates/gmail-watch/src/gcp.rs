@@ -102,7 +102,6 @@ impl GcpClient {
         &self,
         email: &str,
     ) -> Result<DatastoreLookup, Error> {
-
         let json = json!({"keys": [datastore::key(email, &self.project_id)]});
 
         debug!("datastore.request.body: {:?}", serde_json::to_string(&json));
@@ -125,10 +124,9 @@ impl GcpClient {
         match result {
             datastore::LookupResult::Found { found } => match found.first() {
                 None => Ok(DatastoreLookup::Missing),
-                Some(result) => {
-
-                    Ok(DatastoreLookup::Found(DatastoreUser::from_entity(&result.entity)?))
-                }
+                Some(result) => Ok(DatastoreLookup::Found(DatastoreUser::from_entity(
+                    &result.entity,
+                )?)),
             },
             datastore::LookupResult::Missing { .. } => Ok(DatastoreLookup::Missing),
         }
@@ -137,7 +135,7 @@ impl GcpClient {
     pub async fn cloud_datastore_update_history_id(
         &self,
         email: &str,
-        user: &DatastoreUser
+        user: &DatastoreUser,
     ) -> Result<(), Error> {
         let response = self
             .http
@@ -306,17 +304,16 @@ impl DatastoreUser {
                 "Missing token in datastore entity".to_string(),
             ))?;
 
-        let scopes: Vec<String> = entity.properties.get("scopes")
+        let scopes: Vec<String> = entity
+            .properties
+            .get("scopes")
             .and_then(|v| v.as_array())
             .map(|a| a.values.iter().flat_map(|v| v.as_string()).collect())
             .ok_or(Error::InvalidDatastoreContent(
                 "Missing scopes in datastore entity".to_string(),
             ))?;
 
-        let last_known_history_id = entity
-            .properties
-            .get("history_id")
-            .and_then(|v| v.as_u32());
+        let last_known_history_id = entity.properties.get("history_id").and_then(|v| v.as_u32());
 
         Ok(DatastoreUser {
             token,
@@ -327,22 +324,32 @@ impl DatastoreUser {
 
     fn as_entity(&self, key: datastore::Key) -> datastore::Entity {
         let mut properties = std::collections::HashMap::new();
-        
-        properties.insert("token".to_string(), datastore::Value::new_string(&self.token, Some(true)));
-        properties.insert("scopes".to_string(), datastore::Value::new_array(self.scopes.iter().map(|s| datastore::Value::new_string(s, Some(true)))));
+
+        properties.insert(
+            "token".to_string(),
+            datastore::Value::new_string(&self.token, Some(true)),
+        );
+        properties.insert(
+            "scopes".to_string(),
+            datastore::Value::new_array(
+                self.scopes
+                    .iter()
+                    .map(|s| datastore::Value::new_string(s, Some(true))),
+            ),
+        );
         if let Some(id) = self.last_known_history_id {
-            properties.insert("history_id".to_string(), datastore::Value::new_integer(id, Some(true)));
+            properties.insert(
+                "history_id".to_string(),
+                datastore::Value::new_integer(id, Some(true)),
+            );
         }
-        
-        datastore::Entity {
-            key, properties
-        }
+
+        datastore::Entity { key, properties }
     }
 
     pub fn new_history(&mut self, history_id: &HistoryId) {
         self.last_known_history_id.replace(history_id.0);
     }
-
 }
 
 /// A simplified version of gmail's [Message](gmail::Message)
@@ -379,14 +386,12 @@ mod datastore {
         Key {
             partition_id: PartitionId {
                 namespace: None,
-                project_id: project_id.to_string()
+                project_id: project_id.to_string(),
             },
-            path: vec![
-                PathElement {
-                    kind: "oauth2token".to_string(),
-                    name: email.to_string()
-                }
-            ]
+            path: vec![PathElement {
+                kind: "oauth2token".to_string(),
+                name: email.to_string(),
+            }],
         }
     }
 
@@ -405,7 +410,6 @@ mod datastore {
         pub(super) version: String,
         pub(super) cursor: Option<String>,
     }
-
 
     // Common structures (entity, key, values)
 
@@ -449,7 +453,7 @@ mod datastore {
                 value: ValueField::Integer {
                     exclude_from_indexes,
                     integer_value: v.to_string(),
-                }
+                },
             }
         }
 
@@ -458,32 +462,30 @@ mod datastore {
                 value: ValueField::String {
                     exclude_from_indexes,
                     string_value: v.to_string(),
-                }
+                },
             }
         }
 
-        pub(super) fn new_array<I: Iterator<Item= Value>>(i: I) -> Value {
+        pub(super) fn new_array<I: Iterator<Item = Value>>(i: I) -> Value {
             Value {
                 value: ValueField::Array {
                     array_value: ArrayValue {
-                        values: i.collect()
+                        values: i.collect(),
                     },
-                }
+                },
             }
         }
 
         pub(super) fn as_u32(&self) -> Option<u32> {
             match &self.value {
-                ValueField::Integer { integer_value, ..} => {
-                    integer_value.parse::<u32>().ok()
-                },
+                ValueField::Integer { integer_value, .. } => integer_value.parse::<u32>().ok(),
                 _ => None,
             }
         }
 
         pub(super) fn as_string(&self) -> Option<String> {
             match &self.value {
-                ValueField::String { string_value, ..} => Some(string_value.clone()),
+                ValueField::String { string_value, .. } => Some(string_value.clone()),
                 _ => None,
             }
         }
@@ -494,31 +496,28 @@ mod datastore {
                 _ => None,
             }
         }
-
     }
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     #[serde(untagged)]
     enum ValueField {
-        #[serde(rename="string_value")]
+        #[serde(rename = "string_value")]
         #[serde(rename_all = "camelCase")]
         String {
             #[serde(skip_serializing_if = "Option::is_none")]
             exclude_from_indexes: Option<bool>,
             string_value: String,
         },
-        #[serde(rename ="integer_value")]
+        #[serde(rename = "integer_value")]
         #[serde(rename_all = "camelCase")]
         Integer {
             #[serde(skip_serializing_if = "Option::is_none")]
             exclude_from_indexes: Option<bool>,
             integer_value: String,
         },
-        #[serde(rename ="array_value")]
+        #[serde(rename = "array_value")]
         #[serde(rename_all = "camelCase")]
-        Array {
-            array_value: ArrayValue,
-        }
+        Array { array_value: ArrayValue },
     }
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -1051,15 +1050,21 @@ mod tests {
 
         properties.insert(
             "token".to_string(),
-            datastore::Value::new_string("LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O", Some(true)),
+            datastore::Value::new_string(
+                "LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O",
+                Some(true),
+            ),
         );
 
         properties.insert(
             "scopes".to_string(),
-            datastore::Value::new_array(vec![
-                datastore::Value::new_string("email", None),
-                datastore::Value::new_string("profile", None),
-            ].into_iter()),
+            datastore::Value::new_array(
+                vec![
+                    datastore::Value::new_string("email", None),
+                    datastore::Value::new_string("profile", None),
+                ]
+                .into_iter(),
+            ),
         );
 
         let expected = datastore::LookupResult::Found {
