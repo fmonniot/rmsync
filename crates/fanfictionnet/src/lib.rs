@@ -1,5 +1,5 @@
 use ego_tree::NodeRef;
-use hyper::{body, Client};
+use hyper::{body, http::StatusCode, Client};
 use hyper_tls::HttpsConnector;
 use log::warn;
 use scraper::{Html, Node, Selector};
@@ -26,15 +26,16 @@ pub fn new_chapter_number(num: u16) -> ChapterNum {
 
 const FFN_BASE_URL: &str = "https://www.fanfiction.net";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    Http(hyper::Error),
-}
+    #[error("Request to fetch chapter content failed: {0}")]
+    Http(#[from] hyper::Error),
 
-impl From<hyper::Error> for Error {
-    fn from(error: hyper::Error) -> Self {
-        Error::Http(error)
-    }
+    #[error("ff.net returned a non 200 response: {0}")]
+    InvalidStatusCode(StatusCode),
+
+    #[error("Couldn't format the body as a valid UTF-8 string: {0}")]
+    InvalidBody(#[from] std::string::FromUtf8Error),
 }
 
 pub struct Chapter {
@@ -76,10 +77,12 @@ pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Ch
         .unwrap();
     let mut resp = client.get(url).await?;
 
-    // TODO Add a status check
+    if !resp.status().is_success() {
+        return Err(Error::InvalidStatusCode(resp.status()));
+    }
 
     let bytes = body::to_bytes(resp.body_mut()).await?;
-    let content = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
+    let content = String::from_utf8(bytes.to_vec())?;
     let chapter = parse_chapter(content, chapter);
 
     Ok(chapter)

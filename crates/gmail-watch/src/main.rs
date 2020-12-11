@@ -7,7 +7,7 @@ use epub_builder::EpubContent;
 use epub_builder::ReferenceType;
 use epub_builder::ZipLibrary;
 use fanfictionnet::Chapter;
-use futures::stream::{StreamExt as _};
+use futures::stream::StreamExt as _;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
@@ -282,10 +282,7 @@ async fn http_handler(
                 "Can't the read the request body because of error: {:?}",
                 error
             );
-            return Ok(Response::builder()
-                .status(400)
-                .body(Body::empty())
-                .unwrap());
+            return Ok(Response::builder().status(400).body(Body::empty()).unwrap());
         }
     };
 
