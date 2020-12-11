@@ -102,6 +102,11 @@ impl GcpClient {
         &self,
         email: &str,
     ) -> Result<DatastoreLookup, Error> {
+
+        let json = json!({"keys": [datastore::key(email, &self.project_id)]});
+
+        debug!("datastore.request.body: {:?}", serde_json::to_string(&json));
+
         let res = self
             .http
             .post(&format!(
@@ -109,23 +114,11 @@ impl GcpClient {
                 self.project_id
             ))
             .bearer_auth(self.token.as_str())
-            .json(&json!({
-              "keys": [
-                {
-                  "partitionId": {
-                    "projectId": self.project_id
-                  },
-                  "path": [
-                    {
-                      "kind": "oauth2token",
-                      "name": email
-                    }
-                  ]
-                }
-              ]
-            }))
+            .json(&json)
             .send()
             .await?;
+
+        debug!("datastore.response.status: {}", res.status());
 
         let result: datastore::LookupResult = res.json().await?;
 
@@ -133,24 +126,66 @@ impl GcpClient {
             datastore::LookupResult::Found { found } => match found.first() {
                 None => Ok(DatastoreLookup::Missing),
                 Some(result) => {
-                    let token = result
-                        .entity
-                        .properties
-                        .get("token")
-                        .and_then(|v| v.string_value.as_ref());
 
-                    match token {
-                        None => Err(Error::InvalidDatastoreContent(
-                            "Missing token in datastore entity".to_string(),
-                        )),
-                        Some(t) => Ok(DatastoreLookup::Found {
-                            token: t.to_string(),
-                        }),
-                    }
+                    Ok(DatastoreLookup::Found(DatastoreUser::from_entity(&result.entity)?))
                 }
             },
             datastore::LookupResult::Missing { .. } => Ok(DatastoreLookup::Missing),
         }
+    }
+
+    pub async fn cloud_datastore_update_history_id(
+        &self,
+        email: &str,
+        user: &DatastoreUser
+    ) -> Result<(), Error> {
+        let response = self
+            .http
+            .post(&format!(
+                "https://datastore.googleapis.com/v1/projects/{projectId}:beginTransaction",
+                projectId = self.project_id
+            ))
+            .bearer_auth(self.token.as_str())
+            .json(&json!({
+                "transactionOptions": {
+                    "readWrite": {
+
+                    }
+                }
+            }))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body: datastore::BeginTransactionResponse = response.json().await?;
+
+        debug!("beginTransaction: status:{}, body:{:?}", status, body);
+
+        let key = datastore::key(email, &self.project_id);
+        let entity = user.as_entity(key);
+
+        let req = json!({
+            "transaction": body.transaction,
+            "mutations": [ { "update": entity } ]
+        });
+
+        let response = self
+            .http
+            .post(&format!(
+                "https://datastore.googleapis.com/v1/projects/{projectId}:commit",
+                projectId = self.project_id
+            ))
+            .bearer_auth(self.token.as_str())
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        debug!("commit: status:{}, body:|{:?}|", status, body);
+
+        Ok(())
     }
 
     // https://cloud.google.com/identity-platform/docs/use-rest-api#section-refresh-token
@@ -249,8 +284,66 @@ impl GcpClient {
 #[derive(Debug)]
 pub enum DatastoreLookup {
     // For now we only return the token
-    Found { token: String },
+    Found(DatastoreUser),
     Missing,
+}
+
+/// A representation of a user in Cloud Datastore
+#[derive(Debug)]
+pub struct DatastoreUser {
+    pub token: String,
+    scopes: Vec<String>,
+    last_known_history_id: Option<u32>,
+}
+
+impl DatastoreUser {
+    fn from_entity(entity: &datastore::Entity) -> Result<DatastoreUser, Error> {
+        let token = entity
+            .properties
+            .get("token")
+            .and_then(|v| v.string_value.as_ref())
+            .cloned()
+            .ok_or(Error::InvalidDatastoreContent(
+                "Missing token in datastore entity".to_string(),
+            ))?;
+
+        let scopes: Vec<String> = entity.properties.get("scopes")
+            .and_then(|v| v.array_value.as_ref())
+            .map(|a| a.values.iter().flat_map(|v| v.string_value.as_ref()).cloned().collect())
+            .ok_or(Error::InvalidDatastoreContent(
+                "Missing scopes in datastore entity".to_string(),
+            ))?;
+
+        let last_known_history_id = entity
+            .properties
+            .get("history_id")
+            .and_then(|v| v.as_u32());
+
+        Ok(DatastoreUser {
+            token,
+            scopes,
+            last_known_history_id,
+        })
+    }
+
+    fn as_entity(&self, key: datastore::Key) -> datastore::Entity {
+        let mut properties = std::collections::HashMap::new();
+        
+        properties.insert("token".to_string(), datastore::Value::new_string(&self.token));
+        properties.insert("scopes".to_string(), datastore::Value::new_array(self.scopes.iter().map(|s| datastore::Value::new_string(s))));
+        if let Some(id) = self.last_known_history_id {
+            properties.insert("history_id".to_string(), datastore::Value::new_integer(id));
+        }
+        
+        datastore::Entity {
+            key, properties
+        }
+    }
+
+    pub fn new_history(&mut self, history_id: &HistoryId) {
+        self.last_known_history_id.replace(history_id.0);
+    }
+
 }
 
 /// A simplified version of gmail's [Message](gmail::Message)
@@ -279,8 +372,27 @@ impl EmailMessage {
 
 /// data structure used on the wire by Cloud Datastore APIs
 mod datastore {
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+
+    /// An helper to make the key we use in this project
+    // TODO Return a Key instead ?
+    pub(super) fn key(email: &str, project_id: &str) -> Key {
+        Key {
+            partition_id: PartitionId {
+                namespace: None,
+                project_id: project_id.to_string()
+            },
+            path: vec![
+                PathElement {
+                    kind: "oauth2token".to_string(),
+                    name: email.to_string()
+                }
+            ]
+        }
+    }
+
+    // Lookup API
 
     #[derive(Debug, Deserialize, PartialEq)]
     #[serde(untagged)]
@@ -296,43 +408,93 @@ mod datastore {
         pub(super) cursor: Option<String>,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     pub(super) struct Entity {
         pub(super) key: Key,
         #[serde(default)]
         pub(super) properties: HashMap<String, Value>,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct Key {
         pub(super) partition_id: PartitionId,
         pub(super) path: Vec<PathElement>,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct PartitionId {
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub(super) namespace: Option<String>,
         pub(super) project_id: String,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     pub(super) struct PathElement {
         pub(super) kind: String,
         pub(super) name: String,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+
+    // TODO value field should actually be an enum and flatten it with serde
+    // because we can only have one of those fields at the same time
+    #[derive(Debug, Deserialize, PartialEq, Default, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct Value {
+        // metadata
+        #[serde(skip_deserializing)]
+        //#[serde(skip_serializing_if = "ser_exclude_index")]
+        exclude_from_indexes: bool,
+        // values
         pub(super) string_value: Option<String>,
+        pub(super) integer_value: Option<String>,
         pub(super) array_value: Option<ArrayValue>,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    impl Value {
+        pub(super) fn new_integer(v: u32) -> Value {
+            Value {
+                exclude_from_indexes: true,
+                integer_value: Some(v.to_string()),
+                ..Default::default()
+            }
+        }
+
+        pub(super) fn new_string(v: &str) -> Value {
+            Value {
+                exclude_from_indexes: true,
+                string_value: Some(v.to_string()),
+                ..Default::default()
+            }
+        }
+
+        pub(super) fn new_array<I: Iterator<Item= Value>>(i: I) -> Value {
+            Value {
+                exclude_from_indexes: true,
+                array_value: Some(ArrayValue {
+                    values: i.collect()
+                }),
+                ..Default::default()
+            }
+        }
+
+        pub(super) fn as_u32(&self) -> Option<u32> {
+            self.integer_value.as_ref().and_then(|s| s.parse::<u32>().ok())
+        }
+
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     pub(super) struct ArrayValue {
         pub(super) values: Vec<Value>,
+    }
+
+    // Beging Transaction
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    pub(super) struct BeginTransactionResponse {
+        pub(super) transaction: String,
     }
 }
 
@@ -802,7 +964,7 @@ mod multipart {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct HistoryId(u32);
+pub struct HistoryId(pub u32);
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct MessageId(String);
@@ -843,6 +1005,51 @@ mod tests {
         }
     }
 
+    use serde::{Serialize, Deserialize};
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Outer {
+        #[serde(flatten)]
+        value: Inner,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    enum Inner {
+        #[serde(rename(serialize = "string_field"))]
+        String {
+            exclude_from_indexes: bool,
+            string_value: String,
+        },
+        Integer {
+            exclude_from_indexes: bool,
+            integer_value: String,
+        },
+        Array {
+            array_value: InArray,
+        }
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct InArray {
+        values: Vec<Outer>
+    }
+
+    #[test]
+    fn test_flatten() {
+        let out_str = Outer {
+            value: Inner::String {
+                exclude_from_indexes: true,
+                string_value: "my_string".to_string()
+            }
+        };
+
+        println!("{}", serde_json::to_string(&out_str).unwrap());
+
+    }
+
     #[test]
     fn deserialize_datastore_found() {
         let body = asset("test_datastore_found_response.json");
@@ -853,29 +1060,15 @@ mod tests {
 
         properties.insert(
             "token".to_string(),
-            datastore::Value {
-                string_value: Some("LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O".to_string()),
-                array_value: None,
-            },
+            datastore::Value::new_string("LvrNooPprYvSiVwyN3VRIARnc05Pte/dtENtlLpWPZ7cC0O"),
         );
 
         properties.insert(
             "scopes".to_string(),
-            datastore::Value {
-                string_value: None,
-                array_value: Some(datastore::ArrayValue {
-                    values: vec![
-                        datastore::Value {
-                            string_value: Some("email".to_string()),
-                            array_value: None,
-                        },
-                        datastore::Value {
-                            string_value: Some("profile".to_string()),
-                            array_value: None,
-                        },
-                    ],
-                }),
-            },
+            datastore::Value::new_array(vec![
+                datastore::Value::new_string("email"),
+                datastore::Value::new_string("profile"),
+            ].into_iter()),
         );
 
         let expected = datastore::LookupResult::Found {

@@ -90,14 +90,26 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
         .cloud_datastore_user_by_email(&notification.email_address)
         .await?;
 
-    let mut user_token = match result {
-        gcp::DatastoreLookup::Found { token } => {
-            tokens::UserToken::from_encrypted_blob(&cfg.crypto, &token)?
+    let mut user = match result {
+        gcp::DatastoreLookup::Found(user) => {
+            user
         }
         _ => {
             todo!("return an error")
         }
     };
+
+    let mut user_token = tokens::UserToken::from_encrypted_blob(&cfg.crypto, &user.token)?;
+
+    user.new_history(&notification.history_id);
+
+    let tx = cfg
+        .gcp
+        .cloud_datastore_update_history_id("my@email.io", &user)
+        .await;
+    info!("Update history id result: {:?}", tx);
+
+    return Ok(());
 
     // Might be skippable within the first hours after login, but otherwise always required
     cfg.gcp.refresh_user_token(&mut user_token).await?;
