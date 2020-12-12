@@ -59,10 +59,28 @@ pub enum ApiKind {
 pub struct DeviceId(String); // uuid
 pub struct Token(String);
 
+impl Token {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 pub struct Client {
     http: reqwest::Client,
     device_token: Option<Token>,
     user_token: Option<Token>,
+}
+
+impl Client {
+    pub fn from_tokens<S: Into<String>>(device_token: &str, user_token: Option<S>) -> Client {
+        let http = reqwest::Client::new();
+
+        Client {
+            http,
+            device_token: Some(Token(device_token.to_string())),
+            user_token: user_token.map(|s| Token(s.into())),
+        }
+    }
 }
 
 pub fn make_client() -> Result<Client, Error> {
@@ -103,7 +121,10 @@ fn validate_file_name_for_upload(file_name: &str) -> Result<(String, String), Er
 }
 
 impl Client {
-    // TODO Extract as a function which take a Client instead ?
+    pub fn user_token(&self) -> &Option<Token> {
+        &self.user_token
+    }
+
     /// Upload a pdf/epub document to the remarkable cloud.
     ///
     /// It is required to know the document id of the folder where the file
@@ -171,7 +192,6 @@ impl Client {
     /// As this require the user to give back a registration code,
     /// this method should not be used in an automated context.
     // TODO Manage errors correctly
-    #[allow(unused)]
     pub async fn register(&mut self, code: &str) -> Result<(), Error> {
         debug!("Attempt to register a new device code");
         let did = Uuid::new_v4().to_string();

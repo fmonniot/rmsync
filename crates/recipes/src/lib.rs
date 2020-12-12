@@ -238,6 +238,13 @@ pub async fn upload_ffnet_chapter(
     Ok(())
 }
 
+pub async fn upload_ffnet_story(
+    rm_cloud: &rmcloud::Client,
+    story_id: fanfictionnet::StoryId,
+) -> Result<(), Error> {
+    Ok(())
+}
+
 async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
     let mut buffer = Vec::new();
 

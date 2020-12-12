@@ -7,12 +7,24 @@ use scraper::{Html, Node, Selector};
 #[derive(Debug, PartialEq)]
 pub struct StoryId(u32);
 
+impl StoryId {
+    pub fn from_str(s: &str) -> Option<StoryId> {
+        s.parse::<u32>().ok().map(StoryId)
+    }
+}
+
 pub fn new_story_id(id: u32) -> StoryId {
     StoryId(id)
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
 pub struct ChapterNum(u16);
+
+impl ChapterNum {
+    pub fn from_str(s: &str) -> Option<ChapterNum> {
+        s.parse::<u16>().ok().map(ChapterNum)
+    }
+}
 
 impl std::fmt::Display for ChapterNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
