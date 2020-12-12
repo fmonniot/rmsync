@@ -6,7 +6,10 @@ edition = "2018"
 
 [dependencies]
 google-cloud = { path = "../google-cloud" }
+fanfictionnet = { path = "../fanfictionnet" }
+rmcloud = { path = "../rmcloud" }
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 futures = "0.3"
+epub-builder = { version = "0.4", features = [ "zip-library" ] }

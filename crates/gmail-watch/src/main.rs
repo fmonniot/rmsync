@@ -2,17 +2,11 @@
 
 use std::convert::Infallible;
 
-use epub_builder::EpubBuilder;
-use epub_builder::EpubContent;
-use epub_builder::ReferenceType;
-use epub_builder::ZipLibrary;
-use fanfictionnet::Chapter;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
-use log::{debug, error, info};
+use log::{error, info};
 use regex::Regex;
-use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -31,20 +25,12 @@ struct Notification {
 
 #[derive(Debug)]
 enum Error {
-    FFN(fanfictionnet::Error),
     RMCloud(rmcloud::Error),
-    Epub(epub_builder::Error),
     Io(std::io::Error),
     Gcp(GcpError),
     Recipes(recipes::Error),
     Token(tokens::TokenError),
     InvalidEmailContent,
-}
-
-impl From<fanfictionnet::Error> for Error {
-    fn from(error: fanfictionnet::Error) -> Self {
-        Error::FFN(error)
-    }
 }
 
 impl From<rmcloud::Error> for Error {
@@ -56,12 +42,6 @@ impl From<rmcloud::Error> for Error {
 impl From<recipes::Error> for Error {
     fn from(error: recipes::Error) -> Self {
         Error::Recipes(error)
-    }
-}
-
-impl From<epub_builder::Error> for Error {
-    fn from(error: epub_builder::Error) -> Self {
-        Error::Epub(error)
     }
 }
 
@@ -131,18 +111,7 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
             let (story_id, chapter) =
                 parse_ffn_email(&content).ok_or(Error::InvalidEmailContent)?;
 
-            let chapter = fanfictionnet::fetch_story_chapter(story_id, chapter).await?;
-
-            let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
-            let epub = make_epub(chapter).await?;
-
-            debug!("uploading epub: {}", file_name);
-
-            // Going blind on this upload. Let's assume there won't be any conflict for now
-            // and see how it develops over time.
-            rm_cloud
-                .upload_epub(&epub, &file_name, DocumentId::empty())
-                .await?;
+            recipes::upload_ffnet_chapter(&rm_cloud, story_id, chapter).await?;
         }
     }
 
@@ -169,33 +138,6 @@ fn parse_ffn_email(content: &str) -> Option<(fanfictionnet::StoryId, fanfictionn
             fanfictionnet::new_chapter_number(ch),
         )
     })
-}
-
-async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
-    let mut buffer = Vec::new();
-
-    let content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<body>
-{}
-</body>
-</html>"#,
-        chapter.content()
-    );
-
-    EpubBuilder::new(ZipLibrary::new()?)?
-        // Set some metadata
-        .metadata("author", chapter.author())?
-        .metadata("title", chapter.story_title())?
-        .add_content(
-            EpubContent::new("chapter_1.xhtml", content.as_bytes())
-                .title(chapter.title())
-                .reftype(ReferenceType::Text),
-        )?
-        .generate(&mut buffer)?;
-
-    Ok(buffer)
 }
 
 /// Google Pub/Sub will wrap the actual message within some metadata information.

@@ -8,6 +8,15 @@ pub enum Error {
     #[error("Error while calling Google Cloud: {0}")]
     Gcp(#[from] google_cloud::Error),
 
+    #[error("Error while calling FanFiction.Net: {0}")]
+    FFN(#[from] fanfictionnet::Error),
+
+    #[error("Error while calling reMarkable cloud: {0}")]
+    RMCloud(#[from] rmcloud::Error),
+
+    #[error("Error while building an epub file: {0}")]
+    Epub(#[from] epub_builder::Error),
+
     //#[error("Error while (de)serializing JSON: {0}")]
     //Json(#[from] serde_json::Error),
 
@@ -201,4 +210,57 @@ pub async fn get_emails<I: Iterator<Item = gmail::MessageId>>(
     }
 
     Ok(emails)
+}
+
+use epub_builder::EpubBuilder;
+use epub_builder::EpubContent;
+use epub_builder::ReferenceType;
+use epub_builder::ZipLibrary;
+use fanfictionnet::Chapter;
+use rmcloud::DocumentId;
+
+pub async fn upload_ffnet_chapter(
+    rm_cloud: &rmcloud::Client,
+    story_id: fanfictionnet::StoryId,
+    chapter: fanfictionnet::ChapterNum,
+) -> Result<(), Error> {
+    let chapter = fanfictionnet::fetch_story_chapter(story_id, chapter).await?;
+
+    let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
+    let epub = make_epub(chapter).await?;
+
+    // Going blind on this upload. There won't be any conflict because we generate a new
+    // document id, but it might produce duplicate epub.
+    rm_cloud
+        .upload_epub(&epub, &file_name, DocumentId::empty())
+        .await?;
+
+    Ok(())
+}
+
+async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
+    let mut buffer = Vec::new();
+
+    let content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body>
+{}
+</body>
+</html>"#,
+        chapter.content()
+    );
+
+    EpubBuilder::new(ZipLibrary::new()?)?
+        // Set some metadata
+        .metadata("author", chapter.author())?
+        .metadata("title", chapter.story_title())?
+        .add_content(
+            EpubContent::new("chapter_1.xhtml", content.as_bytes())
+                .title(chapter.title())
+                .reftype(ReferenceType::Text),
+        )?
+        .generate(&mut buffer)?;
+
+    Ok(buffer)
 }
