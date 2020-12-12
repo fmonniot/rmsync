@@ -12,44 +12,41 @@ const DOCUMENT_LIST_URL: &str = "https://document-storage-production-dot-remarka
 const DOCUMENT_UPLOAD_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/upload/request";
 const DOCUMENT_UPDATE_URL: &str = "https://document-storage-production-dot-remarkable-production.appspot.com/document-storage/json/2/upload/update-status";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("No token is available to execute the request")]
     NoTokenAvailable,
+
+    #[error("Only .epub and .pdf files are supported ({0:?} tried)")]
     NoValidExtensionForUpload(Option<String>),
+
+    #[error("The file name contains non-utf8 characters")]
     NoValidFileNameForUpload,
+
+    #[error("File name cannot contains a separator")]
     FileNameIsPath,
-    Archive(archive::ArchiveError),
-    Http(reqwest::Error),
+
+    #[error("An error happened when creating the remarkable archive: {0}")]
+    Archive(#[from] archive::ArchiveError),
+
+    #[error("An error happened while executing a HTTP request: {0}")]
+    Http(#[from] reqwest::Error),
+
+    #[error("A call to {api:?} failed with status {status} (body: |{body}|)")]
     ApiCallFailure {
         status: StatusCode,
         body: String,
         api: ApiKind,
     },
     // TODO Change to a common ApiCallFailure with an enum to discriminate the api
-    UploadRequestFailed {
-        status: StatusCode,
-        reason: String,
-    },
-    UploadFailed {
-        status: StatusCode,
-        reason: String,
-    },
-    MetadaDataUpdateFailed {
-        status: StatusCode,
-        reason: String,
-    },
-}
+    #[error("")]
+    UploadRequestFailed { status: StatusCode, reason: String },
 
-impl From<archive::ArchiveError> for Error {
-    fn from(error: archive::ArchiveError) -> Self {
-        Error::Archive(error)
-    }
-}
+    #[error("")]
+    UploadFailed { status: StatusCode, reason: String },
 
-impl From<reqwest::Error> for Error {
-    fn from(error: reqwest::Error) -> Self {
-        Error::Http(error)
-    }
+    #[error("")]
+    MetadaDataUpdateFailed { status: StatusCode, reason: String },
 }
 
 #[derive(Debug)]

@@ -3,29 +3,16 @@ use serde_json::json;
 use std::io::Write;
 use zip::{result::ZipError, write::FileOptions, ZipWriter};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ArchiveError {
-    Zip(ZipError),
-    Json(serde_json::Error),
-    IO(std::io::Error),
-}
+    #[error("Can't build the ZIP archive: {0}")]
+    Zip(#[from] ZipError),
 
-impl From<ZipError> for ArchiveError {
-    fn from(error: ZipError) -> Self {
-        ArchiveError::Zip(error)
-    }
-}
+    #[error("Can't serialize json file: {0}")]
+    Json(#[from] serde_json::Error),
 
-impl From<serde_json::Error> for ArchiveError {
-    fn from(error: serde_json::Error) -> Self {
-        ArchiveError::Json(error)
-    }
-}
-
-impl From<std::io::Error> for ArchiveError {
-    fn from(error: std::io::Error) -> Self {
-        ArchiveError::IO(error)
-    }
+    #[error("Can't write file into the archive: {0}")]
+    IO(#[from] std::io::Error),
 }
 
 pub(crate) fn make(
