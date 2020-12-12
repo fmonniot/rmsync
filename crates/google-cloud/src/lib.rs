@@ -4,10 +4,10 @@ use log::{debug, warn};
 use serde::Deserialize;
 use serde_json::json;
 
-pub mod tokens;
 pub mod datastore;
 pub mod gmail;
 mod multipart;
+pub mod tokens;
 
 // TODO It'd be nice to share the AuthenticationManager and reqwest::Client between connections
 pub async fn make_client(
@@ -37,16 +37,16 @@ pub enum Error {
 
     #[error("Error while calling an API: {0}")]
     Http(#[from] reqwest::Error),
-    
+
     #[error("Error while retrieving auth info: {0}")]
     GcpAuth(#[from] gcp_auth::Error),
-    
+
     #[error("Error while decoding base64 content: {0}")]
     Base64(#[from] base64::DecodeError),
-    
+
     #[error("Not a valid UTF-8 string: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
-    
+
     #[error("Error while decoding a multipart response: {0}")]
     DecodeMultipart(#[from] multipart::ReadMultipartError),
 
@@ -72,7 +72,6 @@ pub struct GcpClient {
 // when a request goes wrong. Otherwise I know myself and won't put the effort to
 // investiguate further.
 impl GcpClient {
-
     pub fn project_id(&self) -> &str {
         &self.project_id
     }
@@ -82,7 +81,7 @@ impl GcpClient {
         &self,
         keys: Vec<datastore::Key>,
     ) -> Result<Option<Vec<datastore::Entity>>, Error> {
-        let json = json!({"keys": keys});
+        let json = json!({ "keys": keys });
 
         debug!("datastore.request.body: {:?}", serde_json::to_string(&json));
 
@@ -101,12 +100,14 @@ impl GcpClient {
 
         let result: datastore::LookupResult = res.json().await?;
 
-        Ok(result.as_option().map(|vec| vec.into_iter().map(|r|r.entity).collect()))
+        Ok(result
+            .as_option()
+            .map(|vec| vec.into_iter().map(|r| r.entity).collect()))
     }
 
     // https://cloud.google.com/datastore/docs/reference/data/rest/v1/projects/beginTransaction#TransactionOptions
     pub async fn cloud_datastore_begin_transaction(
-        &self
+        &self,
     ) -> Result<datastore::TransactionId, Error> {
         let response = self
             .http
@@ -133,13 +134,11 @@ impl GcpClient {
         Ok(body.transaction)
     }
 
-
     pub async fn cloud_datastore_update_entity(
         &self,
         transaction: datastore::TransactionId,
         entity: datastore::Entity,
     ) -> Result<(), Error> {
-
         let req = json!({
             "transaction": transaction,
             "mutations": [ { "update": entity } ]
@@ -257,7 +256,6 @@ impl GcpClient {
     }
 }
 
-
 // TODO Recipes
 /// A simplified version of gmail's [Message](gmail::Message)
 #[derive(Debug)]
@@ -283,7 +281,6 @@ impl EmailMessage {
     }
 }
 
-
 mod identity {
     use serde::Deserialize;
 
@@ -298,4 +295,3 @@ mod identity {
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct MessageId(String);
-

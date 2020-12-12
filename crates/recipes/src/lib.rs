@@ -1,5 +1,4 @@
-
-use google_cloud::{GcpClient, datastore};
+use google_cloud::{datastore, GcpClient};
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -12,10 +11,9 @@ pub enum Error {
 
     //#[error("Error while decoding base64 content: {0}")]
     //Base64(#[from] base64::DecodeError),
-    
     #[error("Not a valid UTF-8 string: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
-    
+
     #[error("Missing fields in the datastore entity: {0}")]
     MissingDatastoreUserField(&'static str),
 
@@ -26,12 +24,9 @@ pub enum Error {
     NoBodyToDecode,
 }
 
-
-
 // TODO Remove .0 public access once gmail helpers have been moved here
 #[derive(Debug, Deserialize)]
 pub struct HistoryId(pub u32);
-
 
 /// A representation of a user in Cloud Datastore
 #[derive(Debug)]
@@ -60,18 +55,14 @@ impl DatastoreUser {
             .properties
             .get("token")
             .and_then(|v| v.as_string())
-            .ok_or(Error::MissingDatastoreUserField(
-                "token"
-            ))?;
+            .ok_or(Error::MissingDatastoreUserField("token"))?;
 
         let scopes: Vec<String> = entity
             .properties
             .get("scopes")
             .and_then(|v| v.as_array())
             .map(|a| a.values.iter().flat_map(|v| v.as_string()).collect())
-            .ok_or(Error::MissingDatastoreUserField(
-                "scopes"
-            ))?;
+            .ok_or(Error::MissingDatastoreUserField("scopes"))?;
 
         let last_known_history_id = entity.properties.get("history_id").and_then(|v| v.as_u32());
 
@@ -112,7 +103,6 @@ impl DatastoreUser {
     }
 }
 
-
 pub async fn fetch_user_by_email(
     client: &GcpClient,
     email: &str,
@@ -121,14 +111,10 @@ pub async fn fetch_user_by_email(
 
     let result = client.cloud_datastore_lookup(vec![key]).await?;
 
-    let r = result
-        .as_ref()
-        .and_then(|entities| entities.first());
+    let r = result.as_ref().and_then(|entities| entities.first());
 
     if let Some(entity) = r {
-        let u = DatastoreUser::from_entity(
-            &entity,
-        )?;
+        let u = DatastoreUser::from_entity(&entity)?;
 
         Ok(Some(u))
     } else {
@@ -141,13 +127,14 @@ pub async fn update_user(
     email: &str,
     user: &DatastoreUser,
 ) -> Result<(), Error> {
-
     let transaction = client.cloud_datastore_begin_transaction().await?;
 
     let key = DatastoreUser::key(email, &client.project_id());
     let entity = user.as_entity(key);
 
-    client.cloud_datastore_update_entity(transaction, entity).await?;
+    client
+        .cloud_datastore_update_entity(transaction, entity)
+        .await?;
 
     Ok(())
 }

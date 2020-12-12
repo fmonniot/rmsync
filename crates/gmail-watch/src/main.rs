@@ -17,7 +17,7 @@ use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use google_cloud::{tokens, GcpClient, Error as GcpError};
+use google_cloud::{tokens, Error as GcpError, GcpClient};
 use recipes::HistoryId;
 
 // {"emailAddress": "user@example.com", "historyId": "9876543210"}

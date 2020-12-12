@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-
 // Lookup API
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -152,7 +151,6 @@ pub struct BeginTransactionResponse {
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub struct TransactionId(String);
-
 
 #[cfg(test)]
 mod tests {
