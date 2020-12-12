@@ -72,11 +72,17 @@ pub struct GcpClient {
 // when a request goes wrong. Otherwise I know myself and won't put the effort to
 // investiguate further.
 impl GcpClient {
-    pub async fn cloud_datastore_user_by_email(
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    // https://cloud.google.com/datastore/docs/reference/data/rest/v1/projects/lookup
+    pub async fn cloud_datastore_lookup(
         &self,
-        email: &str,
-    ) -> Result<DatastoreLookup, Error> {
-        let json = json!({"keys": [datastore::key(email, &self.project_id)]});
+        keys: Vec<datastore::Key>,
+    ) -> Result<Option<Vec<datastore::Entity>>, Error> {
+        let json = json!({"keys": keys});
 
         debug!("datastore.request.body: {:?}", serde_json::to_string(&json));
 
@@ -95,22 +101,13 @@ impl GcpClient {
 
         let result: datastore::LookupResult = res.json().await?;
 
-        match result {
-            datastore::LookupResult::Found { found } => match found.first() {
-                None => Ok(DatastoreLookup::Missing),
-                Some(result) => Ok(DatastoreLookup::Found(DatastoreUser::from_entity(
-                    &result.entity,
-                )?)),
-            },
-            datastore::LookupResult::Missing { .. } => Ok(DatastoreLookup::Missing),
-        }
+        Ok(result.as_option().map(|vec| vec.into_iter().map(|r|r.entity).collect()))
     }
 
-    pub async fn cloud_datastore_update_history_id(
-        &self,
-        email: &str,
-        user: &DatastoreUser,
-    ) -> Result<(), Error> {
+    // https://cloud.google.com/datastore/docs/reference/data/rest/v1/projects/beginTransaction#TransactionOptions
+    pub async fn cloud_datastore_begin_transaction(
+        &self
+    ) -> Result<datastore::TransactionId, Error> {
         let response = self
             .http
             .post(&format!(
@@ -133,11 +130,18 @@ impl GcpClient {
 
         debug!("beginTransaction: status:{}, body:{:?}", status, body);
 
-        let key = datastore::key(email, &self.project_id);
-        let entity = user.as_entity(key);
+        Ok(body.transaction)
+    }
+
+
+    pub async fn cloud_datastore_update_entity(
+        &self,
+        transaction: datastore::TransactionId,
+        entity: datastore::Entity,
+    ) -> Result<(), Error> {
 
         let req = json!({
-            "transaction": body.transaction,
+            "transaction": transaction,
             "mutations": [ { "update": entity } ]
         });
 
@@ -188,7 +192,7 @@ impl GcpClient {
     pub async fn gmail_users_history_list(
         &self,
         token: &UserToken,
-        history_id: &HistoryId,
+        history_id: &u32,
     ) -> Result<Vec<MessageId>, Error> {
         debug!("Fetching user history list");
 
@@ -196,7 +200,7 @@ impl GcpClient {
             .http
             .get("https://gmail.googleapis.com/gmail/v1/users/me/history")
             .bearer_auth(&token.as_str())
-            .query(&[("startHistoryId", history_id.0)])
+            .query(&[("startHistoryId", history_id)])
             .send()
             .await?;
 
@@ -253,79 +257,6 @@ impl GcpClient {
     }
 }
 
-#[derive(Debug)]
-pub enum DatastoreLookup {
-    // For now we only return the token
-    Found(DatastoreUser),
-    Missing,
-}
-
-// TODO Recipes
-/// A representation of a user in Cloud Datastore
-#[derive(Debug)]
-pub struct DatastoreUser {
-    pub token: String,
-    scopes: Vec<String>,
-    last_known_history_id: Option<u32>,
-}
-
-impl DatastoreUser {
-    fn from_entity(entity: &datastore::Entity) -> Result<DatastoreUser, Error> {
-        let token = entity
-            .properties
-            .get("token")
-            .and_then(|v| v.as_string())
-            .ok_or(Error::MissingDatastoreUserField(
-                "token"
-            ))?;
-
-        let scopes: Vec<String> = entity
-            .properties
-            .get("scopes")
-            .and_then(|v| v.as_array())
-            .map(|a| a.values.iter().flat_map(|v| v.as_string()).collect())
-            .ok_or(Error::MissingDatastoreUserField(
-                "scopes"
-            ))?;
-
-        let last_known_history_id = entity.properties.get("history_id").and_then(|v| v.as_u32());
-
-        Ok(DatastoreUser {
-            token,
-            scopes,
-            last_known_history_id,
-        })
-    }
-
-    fn as_entity(&self, key: datastore::Key) -> datastore::Entity {
-        let mut properties = std::collections::HashMap::new();
-
-        properties.insert(
-            "token".to_string(),
-            datastore::Value::new_string(&self.token, Some(true)),
-        );
-        properties.insert(
-            "scopes".to_string(),
-            datastore::Value::new_array(
-                self.scopes
-                    .iter()
-                    .map(|s| datastore::Value::new_string(s, Some(true))),
-            ),
-        );
-        if let Some(id) = self.last_known_history_id {
-            properties.insert(
-                "history_id".to_string(),
-                datastore::Value::new_integer(id, Some(true)),
-            );
-        }
-
-        datastore::Entity { key, properties }
-    }
-
-    pub fn new_history(&mut self, history_id: &HistoryId) {
-        self.last_known_history_id.replace(history_id.0);
-    }
-}
 
 // TODO Recipes
 /// A simplified version of gmail's [Message](gmail::Message)
@@ -364,9 +295,6 @@ mod identity {
         pub(super) scope: String,
     }
 }
-
-#[derive(Debug, Deserialize)]
-pub struct HistoryId(pub u32);
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct MessageId(String);

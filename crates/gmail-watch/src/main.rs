@@ -17,7 +17,8 @@ use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use google_cloud::{tokens, GcpClient, HistoryId, Error as GcpError, DatastoreLookup};
+use google_cloud::{tokens, GcpClient, Error as GcpError};
+use recipes::HistoryId;
 
 // {"emailAddress": "user@example.com", "historyId": "9876543210"}
 #[derive(Debug, Deserialize)]
@@ -36,6 +37,7 @@ enum Error {
     Epub(epub_builder::Error),
     Io(std::io::Error),
     Gcp(GcpError),
+    Recipes(recipes::Error),
     Token(tokens::TokenError),
     InvalidEmailContent,
 }
@@ -49,6 +51,12 @@ impl From<fanfictionnet::Error> for Error {
 impl From<rmcloud::Error> for Error {
     fn from(error: rmcloud::Error) -> Self {
         Error::RMCloud(error)
+    }
+}
+
+impl From<recipes::Error> for Error {
+    fn from(error: recipes::Error) -> Self {
+        Error::Recipes(error)
     }
 }
 
@@ -84,13 +92,10 @@ impl From<tokens::TokenError> for Error {
 async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<(), Error> {
     info!("Received notification {:?}", notification);
 
-    let result = cfg
-        .gcp
-        .cloud_datastore_user_by_email(&notification.email_address)
-        .await?;
+    let result = recipes::fetch_user_by_email(&cfg.gcp, &notification.email_address).await?;
 
     let mut user = match result {
-        DatastoreLookup::Found(user) => user,
+        Some(user) => user,
         _ => {
             todo!("return an error")
         }
@@ -103,7 +108,7 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, &notification.history_id)
+        .gmail_users_history_list(&user_token, &notification.history_id.0)
         .await?;
 
     info!("Will fetch {} emails", history.len());
@@ -151,11 +156,9 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
         }
     }
 
+    // Update our database with the current history id, to look up on next invokation
     user.new_history(&notification.history_id);
-
-    cfg.gcp
-        .cloud_datastore_update_history_id(&notification.email_address, &user)
-        .await?;
+    recipes::update_user(&cfg.gcp, &notification.email_address, &user).await?;
 
     Ok(())
 }

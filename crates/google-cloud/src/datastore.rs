@@ -3,28 +3,23 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// TODO Recipes
-/// An helper to make the key we use in this project
-pub fn key(email: &str, project_id: &str) -> Key {
-    Key {
-        partition_id: PartitionId {
-            namespace: None,
-            project_id: project_id.to_string(),
-        },
-        path: vec![PathElement {
-            kind: "oauth2token".to_string(),
-            name: email.to_string(),
-        }],
-    }
-}
 
 // Lookup API
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub enum LookupResult {
+pub(crate) enum LookupResult {
     Found { found: Vec<EntityResult> },
     Missing { missing: Vec<EntityResult> },
+}
+
+impl LookupResult {
+    pub(crate) fn as_option(self) -> Option<Vec<EntityResult>> {
+        match self {
+            LookupResult::Found { found } => Some(found),
+            LookupResult::Missing { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -152,8 +147,11 @@ pub struct ArrayValue {
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct BeginTransactionResponse {
-    pub transaction: String,
+    pub transaction: TransactionId,
 }
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub struct TransactionId(String);
 
 
 #[cfg(test)]
