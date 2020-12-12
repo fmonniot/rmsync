@@ -7,7 +7,6 @@ use epub_builder::EpubContent;
 use epub_builder::ReferenceType;
 use epub_builder::ZipLibrary;
 use fanfictionnet::Chapter;
-use futures::stream::StreamExt as _;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
@@ -104,28 +103,19 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
     let mut user_token = tokens::UserToken::from_encrypted_blob(&cfg.crypto, &user.token)?;
 
     // Might be skippable within the first hours after login, but otherwise always required
-    cfg.gcp.refresh_user_token(&mut user_token).await?;
+    cfg.gcp.identity_refresh_user_token(&mut user_token).await?;
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, &notification.history_id.0)
+        .gmail_users_history_list(&user_token, &notification.history_id.to_string())
         .await?;
 
     info!("Will fetch {} emails", history.len());
 
-    // The Batch APIs can't process more than 100 requests at once, so let's break our queries down if necessary
-    let results: Vec<_> = futures::stream::iter(history)
-        .chunks(100)
-        .then(|chunk| cfg.gcp.gmail_get_messages(&user_token, chunk.into_iter()))
-        .collect()
-        .await;
+    let emails = recipes::get_emails(&cfg.gcp, &user_token, history.into_iter()).await?;
 
-    // It seems the convertion from Vec<Result to Result<Vec isn't implemented on streams
-    let results: Result<Vec<_>, _> = results.into_iter().collect();
-
-    let emails: Vec<_> = results?
+    let emails: Vec<_> = emails
         .into_iter()
-        .flatten()
         .filter(|e| &e.from == "FanFiction <bot@fanfiction.com>")
         .collect();
 

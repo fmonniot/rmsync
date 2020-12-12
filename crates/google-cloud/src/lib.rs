@@ -1,9 +1,8 @@
-use crate::tokens::UserToken;
 use gcp_auth::Token;
 use log::{debug, warn};
-use serde::Deserialize;
 use serde_json::json;
 
+pub use crate::tokens::UserToken;
 pub mod datastore;
 pub mod gmail;
 mod multipart;
@@ -58,6 +57,9 @@ pub enum Error {
 
     #[error("Tried to decode a body without data. This can happens when there are multiple body in a single message (multipart)")]
     NoBodyToDecode,
+
+    #[error("Batch can contains at most 100 requests, {0} asked")]
+    BatchTooManyRequests(u16),
 }
 
 pub struct GcpClient {
@@ -164,7 +166,7 @@ impl GcpClient {
     }
 
     // https://cloud.google.com/identity-platform/docs/use-rest-api#section-refresh-token
-    pub async fn refresh_user_token(&self, token: &mut UserToken) -> Result<(), Error> {
+    pub async fn identity_refresh_user_token(&self, token: &mut UserToken) -> Result<(), Error> {
         debug!("Refreshing user token");
 
         let mut form = std::collections::HashMap::new();
@@ -191,8 +193,8 @@ impl GcpClient {
     pub async fn gmail_users_history_list(
         &self,
         token: &UserToken,
-        history_id: &u32,
-    ) -> Result<Vec<MessageId>, Error> {
+        history_id: &str,
+    ) -> Result<Vec<gmail::MessageId>, Error> {
         debug!("Fetching user history list");
 
         let res = self
@@ -215,11 +217,12 @@ impl GcpClient {
 
     // https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get
     // https://developers.google.com/gmail/api/guides/batch
-    pub async fn gmail_get_messages<I: Iterator<Item = MessageId>>(
+    // TODO For now we ignore all errors. Instead we should return Result<Vec<Result<Message, Error>>, Error>
+    pub async fn gmail_get_messages<I: Iterator<Item = gmail::MessageId>>(
         &self,
         token: &UserToken,
         message_ids: I,
-    ) -> Result<Vec<EmailMessage>, Error> {
+    ) -> Result<Vec<gmail::Message>, Error> {
         debug!("Fetching messages in batch");
 
         let request = self
@@ -227,20 +230,31 @@ impl GcpClient {
             .post("https://www.googleapis.com/batch/gmail/v1")
             .bearer_auth(token.as_str());
 
-        let response =
-            multipart::gmail_get_messages_batch(request, message_ids.map(|i| i.0.clone()))
-                .send()
-                .await?;
+        let mut count = 0;
 
-        let responses: Vec<Result<EmailMessage, Error>> = multipart::read_response(response)
+        let request = multipart::gmail_get_messages_batch(
+            request,
+            message_ids.map(|i| {
+                count += 1;
+                i.0.clone()
+            }),
+        );
+
+        // Fail early because we know Google will reject those
+        if count >= 100 {
+            return Err(Error::BatchTooManyRequests(count));
+        }
+
+        let response = request.send().await?;
+
+        let responses: Vec<Result<gmail::Message, Error>> = multipart::read_response(response)
             .await?
             .into_iter()
             .map(|r| {
                 let r = r?;
                 let m = serde_json::from_slice(r.body())?;
-                let e = EmailMessage::from(m)?;
 
-                Ok(e)
+                Ok(m)
             })
             .collect();
 
@@ -256,31 +270,6 @@ impl GcpClient {
     }
 }
 
-// TODO Recipes
-/// A simplified version of gmail's [Message](gmail::Message)
-#[derive(Debug)]
-pub struct EmailMessage {
-    pub from: String,
-    pub body: Option<String>,
-}
-
-impl EmailMessage {
-    fn from(message: gmail::Message) -> Result<EmailMessage, Error> {
-        let from_header = message
-            .payload
-            .headers
-            .iter()
-            .find(|h| h.name == "From")
-            .ok_or(Error::EmailWithoutFromField)?;
-        let from = from_header.value.clone();
-
-        // This assume the message isn't multipart (as ff.net aren't)
-        let body = message.payload.body.decoded_data().ok();
-
-        Ok(EmailMessage { from, body })
-    }
-}
-
 mod identity {
     use serde::Deserialize;
 
@@ -292,6 +281,3 @@ mod identity {
         pub(super) scope: String,
     }
 }
-
-#[derive(Debug, Deserialize, PartialEq)]
-pub struct MessageId(String);

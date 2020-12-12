@@ -3,6 +3,9 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, PartialEq)]
+pub struct MessageId(pub(crate) String);
+
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct HistoryListResponse {
     #[serde(default)]
@@ -21,37 +24,37 @@ pub(super) struct History {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct HistoryMessage {
-    pub(super) id: super::MessageId,
+    pub(super) id: MessageId,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Message {
-    pub(super) payload: MessagePart,
+pub struct Message {
+    pub payload: MessagePart,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(super) struct MessagePart {
-    pub(super) headers: Vec<Header>,
-    pub(super) body: MessagePartBody,
+pub struct MessagePart {
+    pub headers: Vec<Header>,
+    pub body: MessagePartBody,
     #[serde(default)]
-    pub(super) parts: Vec<MessagePart>,
+    pub parts: Vec<MessagePart>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(super) struct Header {
-    pub(super) name: String,
-    pub(super) value: String,
+pub struct Header {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(super) struct MessagePartBody {
+pub struct MessagePartBody {
     size: u32,
     data: Option<String>, // TODO This is apparently optional in some cases
 }
 
 impl MessagePartBody {
-    pub(super) fn decoded_data(&self) -> Result<String, super::Error> {
+    pub fn decoded_data(&self) -> Result<String, super::Error> {
         if self.size == 0 {
             Err(super::Error::NoBodyToDecode)?;
         }

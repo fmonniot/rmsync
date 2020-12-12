@@ -1,4 +1,6 @@
-use google_cloud::{datastore, GcpClient};
+use futures::stream::StreamExt as _;
+use google_cloud::{datastore, gmail, GcpClient, UserToken};
+use log::warn;
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -24,9 +26,20 @@ pub enum Error {
     NoBodyToDecode,
 }
 
-// TODO Remove .0 public access once gmail helpers have been moved here
+/// A newtype over a notification history id
+// TODO Introduce a gmail::HistoryId(String) and use this one here
+// then have a gmail-watch::pubsub::HistoryId(u32) for the notification part (that's really the only
+// place where a u32 is used)
 #[derive(Debug, Deserialize)]
-pub struct HistoryId(pub u32);
+pub struct HistoryId(u32);
+
+impl HistoryId {
+    /// Convert an history id to a string, because most Google APIs will
+    /// asks for untyped string unfortunately.
+    pub fn to_string(&self) -> String {
+        self.0.to_string()
+    }
+}
 
 /// A representation of a user in Cloud Datastore
 #[derive(Debug)]
@@ -137,4 +150,55 @@ pub async fn update_user(
         .await?;
 
     Ok(())
+}
+
+// TODO Recipes
+/// A simplified version of gmail's [Message](gmail::Message)
+#[derive(Debug)]
+pub struct EmailMessage {
+    pub from: String,
+    pub body: Option<String>,
+}
+
+impl EmailMessage {
+    fn from(message: gmail::Message) -> Result<EmailMessage, Error> {
+        let from_header = message
+            .payload
+            .headers
+            .iter()
+            .find(|h| h.name == "From")
+            .ok_or(Error::EmailWithoutFromField)?;
+        let from = from_header.value.clone();
+
+        // This assume the message isn't multipart (as ff.net aren't)
+        let body = message.payload.body.decoded_data().ok();
+
+        Ok(EmailMessage { from, body })
+    }
+}
+
+pub async fn get_emails<I: Iterator<Item = gmail::MessageId>>(
+    client: &GcpClient,
+    token: &UserToken,
+    message_ids: I,
+) -> Result<Vec<EmailMessage>, Error> {
+    let results: Vec<_> = futures::stream::iter(message_ids)
+        .chunks(100)
+        .then(|chunk| client.gmail_get_messages(token, chunk.into_iter()))
+        .collect()
+        .await;
+
+    // It seems the convertion from Vec<Result to Result<Vec isn't implemented on streams (plus some type guiding)
+    let results: Result<Vec<_>, _> = results.into_iter().collect();
+    let results = results?;
+
+    let mut emails = Vec::new();
+    for message in results.into_iter().flatten() {
+        match EmailMessage::from(message) {
+            Ok(e) => emails.push(e),
+            Err(e) => warn!("Couldn't parse email: {:?}", e),
+        };
+    }
+
+    Ok(emails)
 }
