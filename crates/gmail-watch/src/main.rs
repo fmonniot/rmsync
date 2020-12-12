@@ -17,8 +17,7 @@ use rmcloud::DocumentId;
 use serde::Deserialize;
 use std::sync::Arc;
 
-mod gcp;
-mod tokens;
+use google_cloud::{tokens, GcpClient, HistoryId, Error as GcpError, DatastoreLookup};
 
 // {"emailAddress": "user@example.com", "historyId": "9876543210"}
 #[derive(Debug, Deserialize)]
@@ -27,7 +26,7 @@ struct Notification {
     email_address: String,
 
     #[serde(rename = "historyId")]
-    history_id: gcp::HistoryId,
+    history_id: HistoryId,
 }
 
 #[derive(Debug)]
@@ -36,7 +35,7 @@ enum Error {
     RMCloud(rmcloud::Error),
     Epub(epub_builder::Error),
     Io(std::io::Error),
-    Gcp(gcp::Error),
+    Gcp(GcpError),
     Token(tokens::TokenError),
     InvalidEmailContent,
 }
@@ -65,8 +64,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<gcp::Error> for Error {
-    fn from(error: gcp::Error) -> Self {
+impl From<GcpError> for Error {
+    fn from(error: GcpError) -> Self {
         Error::Gcp(error)
     }
 }
@@ -91,7 +90,7 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
         .await?;
 
     let mut user = match result {
-        gcp::DatastoreLookup::Found(user) => user,
+        DatastoreLookup::Found(user) => user,
         _ => {
             todo!("return an error")
         }
@@ -336,7 +335,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 struct Configuration {
     port: u16,
-    gcp: gcp::GcpClient,
+    gcp: GcpClient,
     crypto: tokens::Cryptographer,
 }
 
@@ -351,7 +350,7 @@ impl Configuration {
             .and_then(|p| p.parse().ok())
             .unwrap_or(8080);
 
-        let gcp = gcp::make_client(
+        let gcp = google_cloud::make_client(
             project_id.clone(),
             google_client_id.clone(),
             google_client_secret.clone(),
