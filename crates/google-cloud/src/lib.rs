@@ -241,7 +241,7 @@ impl GcpClient {
         );
 
         // Fail early because we know Google will reject those
-        if count >= 100 {
+        if count > 100 {
             return Err(Error::BatchTooManyRequests(count));
         }
 
