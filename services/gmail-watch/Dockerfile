@@ -6,7 +6,7 @@ FROM ekidd/rust-musl-builder:latest as builder
 COPY . .
 
 # Install production dependencies and build a release artifact.
-RUN cargo build --release
+RUN cargo build --bin gmail-watch --release
 
 RUN ls /home/rust/src/target/x86_64-unknown-linux-musl/release/
 
