@@ -1,10 +1,10 @@
 use ego_tree::NodeRef;
 use hyper::{body, http::StatusCode, Client};
 use hyper_tls::HttpsConnector;
-use log::warn;
+use log::{debug, warn};
 use scraper::{Html, Node, Selector};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct StoryId(u32);
 
 impl StoryId {
@@ -17,10 +17,14 @@ pub fn new_story_id(id: u32) -> StoryId {
     StoryId(id)
 }
 
-#[derive(PartialEq, Debug, Copy, Clone)]
+#[derive(PartialEq, Debug, Copy, Clone, Ord, PartialOrd, Eq)]
 pub struct ChapterNum(u16);
 
 impl ChapterNum {
+    pub fn new(num: u16) -> ChapterNum {
+        ChapterNum(num)
+    }
+
     pub fn from_str(s: &str) -> Option<ChapterNum> {
         s.parse::<u16>().ok().map(ChapterNum)
     }
@@ -56,6 +60,21 @@ pub struct Chapter {
     story_name: String,
     author: String,
     content: String,
+    total_chapters: usize,
+}
+
+
+impl std::fmt::Debug for Chapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Chapter")
+         .field("num", &self.num)
+         .field("title", &self.title)
+         .field("story_name", &self.story_name)
+         .field("author", &self.author)
+         .field("content.len", &self.content.len())
+         .field("total_chapters", &self.total_chapters)
+         .finish()
+    }
 }
 
 impl Chapter {
@@ -78,16 +97,22 @@ impl Chapter {
     pub fn content(&self) -> &String {
         &self.content
     }
+
+    pub fn number_of_chapters(&self) -> u16 {
+        self.total_chapters as u16
+    }
 }
 
 pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Chapter, Error> {
     let https = HttpsConnector::new();
     let client = Client::builder().build::<_, hyper::Body>(https);
 
-    let url = format!("{}/s/{}/{}", FFN_BASE_URL, sid.0, chapter.0)
+    let uri = format!("{}/s/{}/{}", FFN_BASE_URL, sid.0, chapter.0)
         .parse()
         .unwrap();
-    let mut resp = client.get(url).await?;
+
+    debug!("fetching story chapter at {}", uri);
+    let mut resp = client.get(uri).await?;
 
     if !resp.status().is_success() {
         return Err(Error::InvalidStatusCode(resp.status()));
@@ -102,20 +127,32 @@ pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Ch
 
 // TODO Return error instead of panicking
 fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Chapter {
+    debug!("parse_chapter(chapter: {})", chapter);
     let document = Html::parse_document(&raw_html);
 
+    // Get the content of this chapter
     let selector = Selector::parse(".storytext").unwrap();
     let mut buffer = Vec::new();
     serialize_tree(&mut buffer, &document.select(&selector).next().unwrap());
     let content = String::from_utf8(buffer).unwrap();
 
+    // Get the name of the story
     let selector = Selector::parse("#profile_top > b.xcontrast_txt").unwrap();
     let story_name = document.select(&selector).next().unwrap().inner_html();
 
-    let selector = Selector::parse("#chap_select > option[selected]").unwrap();
-    let title = document.select(&selector).next().unwrap().inner_html();
+    // Because ffnet use an id in two places (facepalm), let's select the first one first
+    let selector = Selector::parse("#chap_select").unwrap();
+    let chap_select = document.select(&selector).next().unwrap();
 
-    let selector = Selector::parse("#profile_top > a:nth-child(5)").unwrap();
+    // In the chapter list, get the current chapter title
+    let selector = Selector::parse("option[selected]").unwrap();
+    let title = chap_select.select(&selector).next().unwrap().inner_html();
+
+    // And count the total number of chapters
+    let total_chapters = chap_select.children().count();
+
+    // Get the author name
+    let selector = Selector::parse("#profile_top > a").unwrap();
     let author = document.select(&selector).next().unwrap().inner_html();
 
     Chapter {
@@ -124,6 +161,7 @@ fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Chapter {
         story_name,
         author,
         content,
+        total_chapters,
     }
 }
 

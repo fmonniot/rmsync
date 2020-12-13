@@ -1,7 +1,10 @@
 use futures::stream::StreamExt as _;
 use google_cloud::{datastore, gmail, GcpClient, UserToken};
-use log::warn;
+use log::{debug, warn};
+use rmcloud::DocumentId;
 use serde::Deserialize;
+
+mod epub;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -11,11 +14,14 @@ pub enum Error {
     #[error("Error while calling FanFiction.Net: {0}")]
     FFN(#[from] fanfictionnet::Error),
 
+    #[error("Errors while calling FanFiction.Net: {0:?}")]
+    FFNs(Vec<fanfictionnet::Error>),
+
     #[error("Error while calling reMarkable cloud: {0}")]
     RMCloud(#[from] rmcloud::Error),
 
     #[error("Error while building an epub file: {0}")]
-    Epub(#[from] epub_builder::Error),
+    Epub(#[from] epub::Error),
 
     //#[error("Error while (de)serializing JSON: {0}")]
     //Json(#[from] serde_json::Error),
@@ -212,13 +218,6 @@ pub async fn get_emails<I: Iterator<Item = gmail::MessageId>>(
     Ok(emails)
 }
 
-use epub_builder::EpubBuilder;
-use epub_builder::EpubContent;
-use epub_builder::ReferenceType;
-use epub_builder::ZipLibrary;
-use fanfictionnet::Chapter;
-use rmcloud::DocumentId;
-
 pub async fn upload_ffnet_chapter(
     rm_cloud: &rmcloud::Client,
     story_id: fanfictionnet::StoryId,
@@ -227,7 +226,7 @@ pub async fn upload_ffnet_chapter(
     let chapter = fanfictionnet::fetch_story_chapter(story_id, chapter).await?;
 
     let file_name = format!("{} - Ch {}.epub", chapter.story_title(), chapter.number());
-    let epub = make_epub(chapter).await?;
+    let epub = epub::from_chapter(chapter)?;
 
     // Going blind on this upload. There won't be any conflict because we generate a new
     // document id, but it might produce duplicate epub.
@@ -242,32 +241,57 @@ pub async fn upload_ffnet_story(
     rm_cloud: &rmcloud::Client,
     story_id: fanfictionnet::StoryId,
 ) -> Result<(), Error> {
+    let chapter_one = fanfictionnet::ChapterNum::new(1);
+    let first_chapter = fanfictionnet::fetch_story_chapter(story_id, chapter_one).await?;
+    let file_name = format!("{}.epub", first_chapter.story_title());
+
+    debug!("first_chapter:{:?}", first_chapter);
+
+    // Fetch the remaining chapters for this story (if any)
+    let mut chapters = if first_chapter.number_of_chapters() < 2 {
+        Vec::new()
+    } else {
+        let range = (2..=first_chapter.number_of_chapters())
+            .map(fanfictionnet::ChapterNum::new)
+            .into_iter();
+
+        let chapters: Vec<_> = futures::stream::iter(range)
+            .map(|c| fanfictionnet::fetch_story_chapter(story_id, c))
+            .buffer_unordered(first_chapter.number_of_chapters() as usize)
+            .collect()
+            .await;
+
+        collect(chapters.into_iter()).map_err(Error::FFNs)?
+    };
+
+    // Add the first chapter (the list will be sorted before building the epub)
+    chapters.push(first_chapter);
+
+    let epub = epub::from_story(chapters)?;
+
+    // Going blind on this upload. There won't be any conflict because we generate a new
+    // document id, but it might produce duplicate epub.
+    rm_cloud
+        .upload_epub(&epub, &file_name, DocumentId::empty())
+        .await?;
+
     Ok(())
 }
 
-async fn make_epub(chapter: Chapter) -> Result<Vec<u8>, Error> {
-    let mut buffer = Vec::new();
+fn collect<T, E, I: Iterator<Item = Result<T, E>>>(iter: I) -> Result<Vec<T>, Vec<E>> {
+    let mut oks = Vec::new();
+    let mut errs = Vec::new();
 
-    let content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<body>
-{}
-</body>
-</html>"#,
-        chapter.content()
-    );
+    for i in iter {
+        match i {
+            Ok(t) => oks.push(t),
+            Err(e) => errs.push(e),
+        }
+    }
 
-    EpubBuilder::new(ZipLibrary::new()?)?
-        // Set some metadata
-        .metadata("author", chapter.author())?
-        .metadata("title", chapter.story_title())?
-        .add_content(
-            EpubContent::new("chapter_1.xhtml", content.as_bytes())
-                .title(chapter.title())
-                .reftype(ReferenceType::Text),
-        )?
-        .generate(&mut buffer)?;
-
-    Ok(buffer)
+    if errs.is_empty() {
+        Ok(oks)
+    } else {
+        Err(errs)
+    }
 }

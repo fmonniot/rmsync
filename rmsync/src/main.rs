@@ -8,6 +8,8 @@ const AUTHORS: &'static str = env!("CARGO_PKG_AUTHORS");
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     println!("1. parse cli arguments (clap ?)");
     let matches = App::new("rmsync")
         .version(VERSION)
