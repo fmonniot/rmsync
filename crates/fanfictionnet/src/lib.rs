@@ -140,16 +140,21 @@ fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Chapter {
     let selector = Selector::parse("#profile_top > b.xcontrast_txt").unwrap();
     let story_name = document.select(&selector).next().unwrap().inner_html();
 
-    // Because ffnet use an id in two places (facepalm), let's select the first one first
+    // Let's lookup the chapter selector menu
     let selector = Selector::parse("#chap_select").unwrap();
-    let chap_select = document.select(&selector).next().unwrap();
+    let (title, total_chapters) = if let Some(chap_select) = document.select(&selector).next() {
+        // In the chapter list, get the current chapter title
+        let selector = Selector::parse("option[selected]").unwrap();
+        let title = chap_select.select(&selector).next().unwrap().inner_html();
 
-    // In the chapter list, get the current chapter title
-    let selector = Selector::parse("option[selected]").unwrap();
-    let title = chap_select.select(&selector).next().unwrap().inner_html();
+        // And count the total number of chapters
+        let total_chapters = chap_select.children().count();
 
-    // And count the total number of chapters
-    let total_chapters = chap_select.children().count();
+        (title, total_chapters)
+    } else {
+        // If there is no menu, it means it's a one shot. Let's use the story name as chapter title instead.
+        (story_name.clone(), 1)
+    };
 
     // Get the author name
     let selector = Selector::parse("#profile_top > a").unwrap();
@@ -235,9 +240,23 @@ mod tests {
     fn parse_one_chapter() {
         let ch = parse_chapter(asset("4985743_38.html"), ChapterNum(1));
 
-        assert_eq!(ch.story_name, "The Path of a Jedi");
-        assert_eq!(ch.title, "38. Part III, Chapter 1");
         assert_eq!(ch.num, ChapterNum(1));
+        assert_eq!(ch.title, "38. Part III, Chapter 1");
+        assert_eq!(ch.story_name, "The Path of a Jedi");
+        assert_eq!(ch.author, "mokakenobi");
         assert_eq!(ch.content.len(), 31430);
+        assert_eq!(ch.total_chapters, 52);
+    }
+
+    #[test]
+    fn parse_oneshot_story() {
+        let ch = parse_chapter(asset("13750471_1.html"), ChapterNum(1));
+
+        assert_eq!(ch.num, ChapterNum(1));
+        assert_eq!(ch.title, "Those Autumn Leaves");
+        assert_eq!(ch.story_name, "Those Autumn Leaves");
+        assert_eq!(ch.author, "LORDSLAYER69");
+        assert_eq!(ch.content.len(), 38820);
+        assert_eq!(ch.total_chapters, 1);
     }
 }
