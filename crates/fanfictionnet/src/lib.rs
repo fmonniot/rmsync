@@ -2,7 +2,7 @@ use ego_tree::NodeRef;
 use hyper::{body, http::StatusCode, Client};
 use hyper_tls::HttpsConnector;
 use log::{debug, warn};
-use scraper::{Html, Node, Selector};
+use scraper::{ElementRef, Html, Node, Selector};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub struct StoryId(u32);
@@ -52,6 +52,9 @@ pub enum Error {
 
     #[error("Couldn't format the body as a valid UTF-8 string: {0}")]
     InvalidBody(#[from] std::string::FromUtf8Error),
+
+    #[error("No elements matched the selector {0}")]
+    SelectNoResult(&'static str),
 }
 
 pub struct Chapter {
@@ -63,17 +66,16 @@ pub struct Chapter {
     total_chapters: usize,
 }
 
-
 impl std::fmt::Debug for Chapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Chapter")
-         .field("num", &self.num)
-         .field("title", &self.title)
-         .field("story_name", &self.story_name)
-         .field("author", &self.author)
-         .field("content.len", &self.content.len())
-         .field("total_chapters", &self.total_chapters)
-         .finish()
+            .field("num", &self.num)
+            .field("title", &self.title)
+            .field("story_name", &self.story_name)
+            .field("author", &self.author)
+            .field("content.len", &self.content.len())
+            .field("total_chapters", &self.total_chapters)
+            .finish()
     }
 }
 
@@ -120,32 +122,35 @@ pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Ch
 
     let bytes = body::to_bytes(resp.body_mut()).await?;
     let content = String::from_utf8(bytes.to_vec())?;
-    let chapter = parse_chapter(content, chapter);
+    let chapter = parse_chapter(content, chapter)?;
 
     Ok(chapter)
 }
 
-// TODO Return error instead of panicking
-fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Chapter {
+fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Result<Chapter, Error> {
     debug!("parse_chapter(chapter: {})", chapter);
     let document = Html::parse_document(&raw_html);
 
     // Get the content of this chapter
-    let selector = Selector::parse(".storytext").unwrap();
+    let story = find_el(&document, ".story_text")?;
     let mut buffer = Vec::new();
-    serialize_tree(&mut buffer, &document.select(&selector).next().unwrap());
+    serialize_tree(&mut buffer, &story);
     let content = String::from_utf8(buffer).unwrap();
 
-    // Get the name of the story
-    let selector = Selector::parse("#profile_top > b.xcontrast_txt").unwrap();
-    let story_name = document.select(&selector).next().unwrap().inner_html();
+    // Get some story metadata
+    let story_name = find_el(&document, "#profile_top > b.xcontrast_txt")?.inner_html();
+    let author = find_el(&document, "#profile_top > a")?.inner_html();
 
     // Let's lookup the chapter selector menu
     let selector = Selector::parse("#chap_select").unwrap();
     let (title, total_chapters) = if let Some(chap_select) = document.select(&selector).next() {
         // In the chapter list, get the current chapter title
         let selector = Selector::parse("option[selected]").unwrap();
-        let title = chap_select.select(&selector).next().unwrap().inner_html();
+        let title = chap_select
+            .select(&selector)
+            .next()
+            .ok_or(Error::SelectNoResult("option[selected]"))?
+            .inner_html();
 
         // And count the total number of chapters
         let total_chapters = chap_select.children().count();
@@ -156,18 +161,23 @@ fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Chapter {
         (story_name.clone(), 1)
     };
 
-    // Get the author name
-    let selector = Selector::parse("#profile_top > a").unwrap();
-    let author = document.select(&selector).next().unwrap().inner_html();
-
-    Chapter {
+    Ok(Chapter {
         num: chapter,
         title,
         story_name,
         author,
         content,
         total_chapters,
-    }
+    })
+}
+
+// Because the selector is going to be a literal string, we assume it will be valid
+fn find_el<'a>(doc: &'a Html, selector: &'static str) -> Result<ElementRef<'a>, Error> {
+    let sel = Selector::parse(&selector).unwrap();
+
+    doc.select(&sel)
+        .next()
+        .ok_or(Error::SelectNoResult(selector))
 }
 
 const TAG_LESSER: u8 = '<' as u8;
@@ -238,7 +248,7 @@ mod tests {
 
     #[test]
     fn parse_one_chapter() {
-        let ch = parse_chapter(asset("4985743_38.html"), ChapterNum(1));
+        let ch = parse_chapter(asset("4985743_38.html"), ChapterNum(1)).expect("parse the chapter");
 
         assert_eq!(ch.num, ChapterNum(1));
         assert_eq!(ch.title, "38. Part III, Chapter 1");
@@ -250,7 +260,7 @@ mod tests {
 
     #[test]
     fn parse_oneshot_story() {
-        let ch = parse_chapter(asset("13750471_1.html"), ChapterNum(1));
+        let ch = parse_chapter(asset("13750471_1.html"), ChapterNum(1)).expect("parse the chapter");
 
         assert_eq!(ch.num, ChapterNum(1));
         assert_eq!(ch.title, "Those Autumn Leaves");
