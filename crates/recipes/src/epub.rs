@@ -55,10 +55,18 @@ pub fn from_story(mut chapters: Vec<Chapter>) -> Result<Vec<u8>, Error> {
     Ok(buffer)
 }
 
-fn chapter_to_epub_content(chapter: &Chapter, insert_title_name: bool) -> EpubContent<Cursor<Vec<u8>>> {
+fn chapter_to_epub_content(
+    chapter: &Chapter,
+    insert_title_name: bool,
+) -> EpubContent<Cursor<Vec<u8>>> {
     let title = if insert_title_name {
-        format!("<h2>{}</h2><hr style=\"width:100%;margin: 0 10% 0 10%;\"></hr>", chapter.title())
-    } else { String::new() };
+        format!(
+            "<h2>{}</h2><hr style=\"width:100%;margin: 0 10% 0 10%;\"></hr>",
+            chapter.title()
+        )
+    } else {
+        String::new()
+    };
 
     let content = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -68,7 +76,7 @@ fn chapter_to_epub_content(chapter: &Chapter, insert_title_name: bool) -> EpubCo
 {}
 </body>
 </html>"#,
-title,
+        title,
         chapter.content()
     );
     let content = std::io::Cursor::new(content.into_bytes());
