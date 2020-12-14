@@ -167,7 +167,6 @@ pub async fn update_user(
     Ok(())
 }
 
-// TODO Recipes
 /// A simplified version of gmail's [Message](gmail::Message)
 #[derive(Debug)]
 pub struct EmailMessage {

@@ -32,8 +32,6 @@ pub(crate) fn make(
     zip.start_file(format!("{}.{}", id.0, ext), options.clone())?;
     zip.write_all(&content)?;
 
-    // TODO Create thumbnail of document ?
-
     // .pagedata file
     zip.start_file(format!("{}.pagedata", id.0), options.clone())?;
     zip.write_all(&Vec::new())?;

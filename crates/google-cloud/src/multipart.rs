@@ -178,8 +178,6 @@ fn parse_http_response(raw_response: Bytes) -> ReadResult<(hyper::http::response
     Ok((builder, body_position))
 }
 
-// TODO Rename functions and test names. They don't make a lot of sense right now.
-
 struct MultipartReader {
     bytes: Bytes,
     position: usize,

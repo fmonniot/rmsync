@@ -157,6 +157,10 @@ impl Client {
         Ok(())
     }
 
+    // TODO Maybe find a way to call this automatically when another API call fails with a non-authorized
+    // status. We need to renew only once though, and maybe provides a boolean configuration to disable this
+    // behavior. That does mean introducing some form of interior mutability too, because we shouldn't ask
+    // for a `&mut` when making a common interaction.
     pub async fn renew_token(&mut self) -> Result<(), Error> {
         debug!("Attempt to renew user token");
         let token = self.device_token.as_ref().ok_or(Error::NoTokenAvailable)?;
@@ -191,7 +195,6 @@ impl Client {
     ///
     /// As this require the user to give back a registration code,
     /// this method should not be used in an automated context.
-    // TODO Manage errors correctly
     pub async fn register(&mut self, code: &str) -> Result<(), Error> {
         debug!("Attempt to register a new device code");
         let did = Uuid::new_v4().to_string();

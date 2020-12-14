@@ -50,7 +50,7 @@ pub struct Header {
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct MessagePartBody {
     size: u32,
-    data: Option<String>, // TODO This is apparently optional in some cases
+    data: Option<String>,
 }
 
 impl MessagePartBody {
