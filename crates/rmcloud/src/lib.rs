@@ -29,7 +29,7 @@ pub enum Error {
     #[error("An error happened when creating the remarkable archive: {0}")]
     Archive(#[from] archive::ArchiveError),
 
-    #[error("An error happened while executing a HTTP request: {0}")]
+    #[error("An unexpected error happened while executing a HTTP request: {0}")]
     Http(#[from] reqwest::Error),
 
     #[error("A call to {api:?} failed with status {status} (body: |{body}|)")]
@@ -38,15 +38,6 @@ pub enum Error {
         body: String,
         api: ApiKind,
     },
-    // TODO Change to a common ApiCallFailure with an enum to discriminate the api
-    #[error("")]
-    UploadRequestFailed { status: StatusCode, reason: String },
-
-    #[error("")]
-    UploadFailed { status: StatusCode, reason: String },
-
-    #[error("")]
-    MetadaDataUpdateFailed { status: StatusCode, reason: String },
 }
 
 #[derive(Debug)]
@@ -54,6 +45,9 @@ pub enum ApiKind {
     RenewToken,
     Register,
     ListDocuments,
+    UploadRequest,
+    UploadArchive,
+    MetedataUpdate,
 }
 
 pub struct DeviceId(String); // uuid
@@ -281,13 +275,16 @@ impl Client {
 
         if status.is_success() {
             let body = response.json().await?;
-            debug!("upload_request:response.body={:#?}", body);
 
             Ok(body)
         } else {
-            let reason = response.text().await?;
+            let body = response.text().await?;
 
-            Err(Error::UploadRequestFailed { status, reason })
+            Err(Error::ApiCallFailure {
+                status,
+                body,
+                api: ApiKind::UploadRequest,
+            })
         }
     }
 
@@ -304,17 +301,16 @@ impl Client {
             .await?;
 
         let status = response.status();
-        let headers = response.headers().clone();
-        let reason = response.text().await?;
-
-        debug!("upload_archive:response.status={}", status);
-        debug!("upload_archive:response.body='{}'", reason);
-        debug!("upload_archive:response.headers='{:?}'", headers);
 
         if status.is_success() {
             Ok(())
         } else {
-            Err(Error::UploadFailed { status, reason })
+            let body = response.text().await?;
+            Err(Error::ApiCallFailure {
+                status,
+                body,
+                api: ApiKind::UploadArchive,
+            })
         }
     }
 
@@ -347,15 +343,17 @@ impl Client {
             .await?;
 
         let status = response.status();
-        let reason = response.text().await?;
-
-        debug!("upload_request:response.status={:?}", status);
-        debug!("upload_request:response.body={:#?}", reason);
 
         if status.is_success() {
             Ok(())
         } else {
-            Err(Error::MetadaDataUpdateFailed { status, reason })
+            let body = response.text().await?;
+
+            Err(Error::ApiCallFailure {
+                status,
+                body,
+                api: ApiKind::MetedataUpdate,
+            })
         }
     }
 }
@@ -380,7 +378,6 @@ impl DocumentId {
     }
 }
 
-// TODO Remove the two pub modifier and use accessors instead
 #[derive(Deserialize, Debug)]
 pub struct Document {
     #[serde(rename = "ID")]
@@ -398,9 +395,9 @@ pub struct Document {
     #[serde(rename = "ModifiedClient")]
     modified_client: String,
     #[serde(rename = "Type")]
-    pub tpe: String,
+    tpe: String,
     #[serde(rename = "VissibleName")]
-    pub visible_name: String,
+    visible_name: String,
     #[serde(rename = "CurrentPage")]
     current_page: u16,
     #[serde(rename = "Bookmarked")]
