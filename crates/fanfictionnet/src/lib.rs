@@ -132,7 +132,7 @@ fn parse_chapter(raw_html: String, chapter: ChapterNum) -> Result<Chapter, Error
     let document = Html::parse_document(&raw_html);
 
     // Get the content of this chapter
-    let story = find_el(&document, ".story_text")?;
+    let story = find_el(&document, ".storytext")?;
     let mut buffer = Vec::new();
     serialize_tree(&mut buffer, &story);
     let content = String::from_utf8(buffer).unwrap();
