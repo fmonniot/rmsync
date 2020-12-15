@@ -1,22 +1,13 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TokenError {
-    Crypto(CryptoError),
-    Json(serde_json::Error),
-}
+    #[error("Couldn't decrypt a token or the private key: {0}")]
+    Crypto(#[from] CryptoError),
 
-impl From<CryptoError> for TokenError {
-    fn from(e: CryptoError) -> Self {
-        TokenError::Crypto(e)
-    }
-}
-
-impl From<serde_json::Error> for TokenError {
-    fn from(error: serde_json::Error) -> Self {
-        TokenError::Json(error)
-    }
+    #[error("Error while (de)serializing JSON: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,30 +46,13 @@ impl UserToken {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
-    Base64(base64::DecodeError),
+    #[error("Can't decode an encoded base64 payload: {0}")]
+    Base64(#[from] base64::DecodeError),
+
+    #[error("Can't decrypt the secret")]
     Decryption,
-}
-
-impl From<base64::DecodeError> for CryptoError {
-    fn from(e: base64::DecodeError) -> Self {
-        CryptoError::Base64(e)
-    }
-}
-
-// TODO See if it's still needed with thiserror or anyhow
-impl std::fmt::Display for CryptoError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SuperError is here!")
-    }
-}
-
-// TODO See if it's still needed with thiserror or anyhow
-impl std::error::Error for CryptoError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
 }
 
 pub struct Cryptographer {
