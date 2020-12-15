@@ -81,6 +81,9 @@ pub enum ReadMultipartError {
 
     #[error("The received response doesn't have a boundary delimiter")]
     NoBoundary,
+
+    #[error("The part doesn't have the expected application/html")]
+    InvalidPartContentType,
 }
 
 type ReadResult<T> = Result<T, ReadMultipartError>;
@@ -127,6 +130,8 @@ pub(super) fn read_response_body(
 fn parse_multipart_response(mut raw_response: Bytes) -> ReadResult<hyper::Response<Bytes>> {
     // There should only be Content-Type and Content-Length as the part headers
     const HEADER_LEN: usize = 2;
+    const CONTENT_TYPE: &str = "Content-Type";
+    const APPLICATION_HTTP: &[u8] = "application/http".as_bytes();
 
     // We just want to find out the end of the part headers, so we read them using
     // httparse::parse_headers and discard the result (we know there are only two of them)
@@ -135,10 +140,17 @@ fn parse_multipart_response(mut raw_response: Bytes) -> ReadResult<hyper::Respon
         httparse::Status::Partial => {
             return Err(ReadMultipartError::PartialHeaders("part headers"));
         }
-        httparse::Status::Complete((end_headers, _)) => {
-            raw_response.advance(end_headers);
+        httparse::Status::Complete((end_headers, headers)) => {
+            if headers
+                .iter()
+                .find(|h| h.name == CONTENT_TYPE && h.value == APPLICATION_HTTP)
+                .is_none()
+            {
+                // No "Content-Type: application/html" header found, let's bail early
+                return Err(ReadMultipartError::InvalidPartContentType);
+            }
 
-            // TODO Fails if Content-Type isn't application/html
+            raw_response.advance(end_headers);
 
             let (builder, body_position) = parse_http_response(raw_response.clone())?;
 
@@ -290,29 +302,31 @@ impl Iterator for MultipartReader {
 }
 
 #[cfg(test)]
-#[test]
-fn test_parse_http_response_parts() {
-    let not_modified = "HTTP/1.1 304 Not Modified\n\
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_http_response_parts() {
+        let not_modified = "HTTP/1.1 304 Not Modified\n\
               ETag: \"etag/animals\"\n\
               \n\
               ";
-    let raw_response = Bytes::from_static(not_modified.as_bytes());
+        let raw_response = Bytes::from_static(not_modified.as_bytes());
 
-    let (builder, remaining) = parse_http_response(raw_response.clone()).expect("can parse");
-    let response = builder.body(()).unwrap();
+        let (builder, remaining) = parse_http_response(raw_response.clone()).expect("can parse");
+        let response = builder.body(()).unwrap();
 
-    let not_modified = hyper::StatusCode::from_u16(304).unwrap();
-    let etag_value = hyper::header::HeaderValue::from_static("\"etag/animals\"");
+        let not_modified = hyper::StatusCode::from_u16(304).unwrap();
+        let etag_value = hyper::header::HeaderValue::from_static("\"etag/animals\"");
 
-    assert_eq!(remaining, raw_response.len());
-    assert_eq!(response.status(), not_modified);
-    assert_eq!(response.headers().get("ETag"), Some(&etag_value));
-}
+        assert_eq!(remaining, raw_response.len());
+        assert_eq!(response.status(), not_modified);
+        assert_eq!(response.headers().get("ETag"), Some(&etag_value));
+    }
 
-#[cfg(test)]
-#[test]
-fn test_read_http_response() {
-    let headers = "Content-Type: application/http\n\
+    #[test]
+    fn test_read_http_response() {
+        let headers = "Content-Type: application/http\n\
             Content-ID: response-{id}\n\
             \n\
             HTTP/1.1 200 OK\n\
@@ -320,7 +334,7 @@ fn test_read_http_response() {
             Content-Length: 156\n\
             \n\
               ";
-    let body = "{\n\
+        let body = "{\n\
             \"kind\": \"farm#animal\",\n\
             \"etag\": \"etag/pony\",\n\
             \"selfLink\": \"/farm/v1/animals/pony\",\n\
@@ -329,28 +343,49 @@ fn test_read_http_response() {
             \"peltColor\": \"white\"\n\
           }\n\
           ";
-    let raw_body = Bytes::from(body.as_bytes());
-    let raw_response = [headers, body].concat();
-    let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
+        let raw_body = Bytes::from(body.as_bytes());
+        let raw_response = [headers, body].concat();
+        let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
 
-    let response = parse_multipart_response(raw_response).expect("can parse response");
+        let response = parse_multipart_response(raw_response).expect("can parse response");
 
-    let ok = hyper::StatusCode::from_u16(200).unwrap();
-    let ct_value = hyper::header::HeaderValue::from_static("application/json");
-    let cl_value = hyper::header::HeaderValue::from_static("156");
+        let ok = hyper::StatusCode::from_u16(200).unwrap();
+        let ct_value = hyper::header::HeaderValue::from_static("application/json");
+        let cl_value = hyper::header::HeaderValue::from_static("156");
 
-    assert_eq!(response.status(), ok);
-    assert_eq!(response.headers().get("Content-Type"), Some(&ct_value));
-    assert_eq!(response.headers().get("Content-Length"), Some(&cl_value));
+        assert_eq!(response.status(), ok);
+        assert_eq!(response.headers().get("Content-Type"), Some(&ct_value));
+        assert_eq!(response.headers().get("Content-Length"), Some(&cl_value));
 
-    assert_eq!(response.body(), &raw_body);
-}
+        assert_eq!(response.body(), &raw_body);
+    }
 
-#[cfg(test)]
-#[test]
-fn test_read_parts() {
-    let boundary = "boundary";
-    let raw = "\r\n--boundary\r\n\
+    #[test]
+    fn test_read_http_response_invalid_content_type() {
+        let raw_response = "Content-Type: application/json\n\
+            Content-ID: response-{id}\n\
+            \n\
+            HTTP/1.1 200 OK\n\
+            Content-Type: application/json\n\
+            Content-Length: 156\n\
+            \n\
+              ";
+        let raw_response = Bytes::copy_from_slice(raw_response.as_bytes());
+
+        match parse_multipart_response(raw_response) {
+            Err(ReadMultipartError::InvalidPartContentType) => (),
+            res => assert_eq!(
+                true, false,
+                "Expecting InvalidPartContentType but {:?} found",
+                res
+            ),
+        }
+    }
+
+    #[test]
+    fn test_read_parts() {
+        let boundary = "boundary";
+        let raw = "\r\n--boundary\r\n\
                 Content-ID: response-{id1}\n\
                 \n\
                 HTTP/1.1 200 OK\n\
@@ -368,12 +403,13 @@ fn test_read_parts() {
                 \r\n--boundary--\r\n\
               ";
 
-    let bytes = Bytes::from(raw.as_bytes());
-    let mut reader = MultipartReader::new(bytes, boundary).map(|b| b.len());
+        let bytes = Bytes::from(raw.as_bytes());
+        let mut reader = MultipartReader::new(bytes, boundary).map(|b| b.len());
 
-    assert_eq!(reader.next(), Some(45));
-    assert_eq!(reader.next(), Some(46));
-    assert_eq!(reader.next(), Some(47));
-    assert_eq!(reader.next(), None);
-    assert_eq!(reader.next(), None);
+        assert_eq!(reader.next(), Some(45));
+        assert_eq!(reader.next(), Some(46));
+        assert_eq!(reader.next(), Some(47));
+        assert_eq!(reader.next(), None);
+        assert_eq!(reader.next(), None);
+    }
 }
