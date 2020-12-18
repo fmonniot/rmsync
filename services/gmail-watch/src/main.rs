@@ -117,8 +117,14 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
     }
 
     // Update our database with the current history id, to look up on next invokation
-    user.new_history(&notification.history_id);
-    recipes::update_user(&cfg.gcp, &notification.email_address, &user).await?;
+    let new_history_id = &notification.history_id;
+    if user.is_history_more_recent(new_history_id) {
+        debug!("User's history_id ({:?}) will be updated to ({:?})", user.history_id(), new_history_id);
+        user.new_history(new_history_id);
+        recipes::update_user(&cfg.gcp, &notification.email_address, &user).await?;
+    } else {
+        debug!("User's history_id ({:?}) will NOT be updated to ({:?})", user.history_id(), new_history_id);
+    }
 
     Ok(())
 }
