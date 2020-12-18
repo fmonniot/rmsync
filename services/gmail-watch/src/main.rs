@@ -71,6 +71,19 @@ impl From<tokens::TokenError> for Error {
 async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<(), Error> {
     info!("Received notification {:?}", notification);
 
+    // Create a distributed lock on the notification email. This is to avoid concurrent processing
+    // when receiving a burst of notifications.
+    let lock = cfg.gcp.cloud_storage_new_lock(notification.email_address.clone());
+    let lock_acquired = lock.lock().await?;
+
+    if !lock_acquired {
+        // After trying for 6 seconds, we couldn't acquire the lock. Let's stop here
+        warn!("Couldn't acquire lock on account {}. Stoping here.", notification.email_address);
+        return Ok(())
+    } else {
+        debug!("Lock acquired. Continuing execution.");
+    }
+
     let result = recipes::fetch_user_by_email(&cfg.gcp, &notification.email_address).await?;
 
     let mut user = match result {
@@ -124,6 +137,10 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
         recipes::update_user(&cfg.gcp, &notification.email_address, &user).await?;
     } else {
         debug!("User's history_id ({:?}) will NOT be updated to ({:?})", user.history_id(), new_history_id);
+    }
+
+    if !lock.unlock().await? {
+        warn!("Couldn't unlock email. Look up logs to see if another function did it concurrently.")
     }
 
     Ok(())
@@ -286,6 +303,7 @@ impl Configuration {
         let google_client_id = std::env::var("GOOGLE_CLIENT_ID")?;
         let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
         let project_id = std::env::var("GCP_PROJECT")?;
+        let bucket_name = std::env::var("LOCK_BUCKET_NAME")?;
 
         let port: u16 = std::env::var("PORT")
             .ok()
@@ -293,9 +311,10 @@ impl Configuration {
             .unwrap_or(8080);
 
         let gcp = google_cloud::make_client(
-            project_id.clone(),
-            google_client_id.clone(),
+            project_id,
+            google_client_id,
             google_client_secret.clone(),
+            bucket_name,
         )
         .await?;
         let crypto = tokens::Cryptographer::new(&google_client_secret)?;

@@ -15,6 +15,7 @@ pub async fn make_client(
     project_id: String,
     client_id: String,
     client_secret: String,
+    lock_bucket: String,
 ) -> Result<GcpClient, Error> {
     let authentication_manager = gcp_auth::init().await?;
     let token = authentication_manager
@@ -26,6 +27,7 @@ pub async fn make_client(
         project_id,
         client_id,
         client_secret,
+        lock_bucket,
         token,
         http,
     })
@@ -77,12 +79,16 @@ pub enum ApiKind {
     BeginTransaction,
     RefreshToken,
     GetHistoryList,
+
+    StorageCreate,
+    StorageDelete,
 }
 
 pub struct GcpClient {
     project_id: String,
     client_id: String,
     client_secret: String,
+    lock_bucket: String,
     token: Token,
     http: reqwest::Client,
 }
@@ -216,6 +222,9 @@ impl GcpClient {
 
         let result: gmail::HistoryListResponse = decode_response(res, ApiKind::GetHistoryList).await?;
 
+        // Find out if this history id match the one in the notification
+        debug!("gmail.users.history.list return history id: {}", result.history_id);
+
         Ok(result
             .history
             .into_iter()
@@ -277,6 +286,16 @@ impl GcpClient {
 
         Ok(messages)
     }
+
+    pub fn cloud_storage_new_lock(&self, object: String) -> Lock {
+        Lock {
+            bucket: self.lock_bucket.clone(),
+            object,
+            client: self.http.clone(),
+            token: self.token.clone(),
+        }
+    }
+
 }
 
 async fn decode_response<T: DeserializeOwned>(response: reqwest::Response, api: ApiKind) -> Result<T, Error> {
@@ -303,5 +322,91 @@ mod identity {
         pub(super) expires_in: u32,
         pub(super) token_type: String,
         pub(super) scope: String,
+    }
+}
+
+/// An asynchronous lock system based on Google Cloud Storage.
+///
+/// It probably is not 100% robust, but it should do the trick
+/// in rmsync context.
+pub struct Lock {
+    bucket: String,
+    object: String,
+    client: reqwest::Client,
+    token: Token,
+}
+
+const STORAGE_LOCK_URL: &str   = "https://storage.googleapis.com/upload/storage/v1";
+const STORAGE_UNLOCK_URL: &str = "https://storage.googleapis.com/storage/v1";
+
+impl Lock {
+
+    // Currently we use the bucket only for locks, so we have a lifecycle configuration set on any objects age (delete after 1 day)
+    // to avoid locking an email ad vitam eternam.
+    // If we want to use the bucket for more things, we will need to find an alternative to the lifecycle
+    // (a) we can use custom time instead of age, and don't set the custom time on non-lock objects (needs to be proven)
+    // (b) we can embedded the time within the lock, and delete if too long (needs to think about data races in that case)
+    // https://cloud.google.com/storage/docs/json_api/v1/objects/insert
+    pub async fn lock(&self) -> Result<bool, Error> {
+        let url = format!("{}/b/{}/o", STORAGE_LOCK_URL, self.bucket);
+
+        // query explanation
+        // media - Simple upload. Upload the object data only, without any metadata.
+        // Makes the operation conditional on whether the object's current generation matches the given value. Setting to 0 makes the operation succeed only if there are no live versions of the object.
+        let req = self.client
+            .post(&url)
+            .query(&[("name", self.object.as_str()), ("uploadType", "media"), ("ifGenerationMatch", "0")])
+            .header("content-type", "text/plain")
+            .body("1");
+        
+        let acquired = self.send(req, ApiKind::StorageCreate).await?;
+
+        Ok(acquired)
+    }
+
+    // https://cloud.google.com/storage/docs/json_api/v1/objects/delete
+    pub async fn unlock(&self) -> Result<bool, Error> {
+
+        let object = urlencoding::encode(&self.object);
+        let url = format!("{}/b/{}/o/{}", STORAGE_UNLOCK_URL, self.bucket, object);
+
+        let req = self.client.delete(&url);
+
+        Ok(self.send(req, ApiKind::StorageDelete).await?)
+    }
+
+    // return whether the request succeed within the retry limit
+    async fn send(&self, req: reqwest::RequestBuilder, api: ApiKind) -> Result<bool, Error> {
+        let req = std::sync::Arc::new(req.bearer_auth(self.token.as_str()).build()?);
+
+        let duration = tokio::time::Duration::new(1, 0);
+        let mut counter = 1;
+
+        // With 3 tries, we will wait a maximum of 1+2+3= 6 seconds
+        while counter < 4 {
+            // We know we can clone the request, because we can guarantee the body aren't streams
+            let response = self.client.execute(req.try_clone().unwrap()).await?;
+
+            debug!("gcp.lock: {:?}, status: {}", api, response.status());
+            let status = response.status();
+
+            // Only log body on non-expected status code
+            match status {
+                StatusCode::OK => return Ok(true), // lock created
+                StatusCode::NO_CONTENT => return Ok(true), // lock deleted
+                StatusCode::NOT_FOUND => return Ok(false), // no lock to delete
+                StatusCode::PRECONDITION_FAILED => (), // lock created by another
+                _ => {
+                    let body = response.text().await?;
+                    debug!("gcp.lock.body: {}", body.replace('\n', ""));
+                }
+            };
+
+            // Not successful lock, wait some time and retry
+            tokio::time::delay_for(duration * counter).await;
+            counter += 1;
+        }
+
+        Ok(false)
     }
 }

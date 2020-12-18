@@ -11,7 +11,7 @@ pub(super) struct HistoryListResponse {
     #[serde(default)]
     pub(super) history: Vec<History>,
     next_page_token: Option<String>,
-    history_id: String,
+    pub(super) history_id: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
