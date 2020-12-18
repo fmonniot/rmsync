@@ -1,6 +1,8 @@
 use gcp_auth::Token;
 use log::{debug, warn};
 use serde_json::json;
+use serde::de::DeserializeOwned;
+use reqwest::StatusCode;
 
 pub use crate::tokens::UserToken;
 pub mod datastore;
@@ -49,6 +51,13 @@ pub enum Error {
     #[error("Error while decoding a multipart response: {0}")]
     DecodeMultipart(#[from] multipart::ReadMultipartError),
 
+    #[error("A call to {api:?} failed with status {status} (body: |{body}|)")]
+    UnexpectedStatus {
+        status: StatusCode,
+        body: String,
+        api: ApiKind,
+    },
+
     #[error("Missing fields in the datastore entity: {0}")]
     MissingDatastoreUserField(&'static str),
 
@@ -62,6 +71,14 @@ pub enum Error {
     BatchTooManyRequests(u16),
 }
 
+#[derive(Debug)]
+pub enum ApiKind {
+    DatastoreLookup,
+    BeginTransaction,
+    RefreshToken,
+    GetHistoryList,
+}
+
 pub struct GcpClient {
     project_id: String,
     client_id: String,
@@ -70,9 +87,6 @@ pub struct GcpClient {
     http: reqwest::Client,
 }
 
-// TODO Implement a better error system. I will need the response content in the logs
-// when a request goes wrong. Otherwise I know myself and won't put the effort to
-// investiguate further.
 impl GcpClient {
     pub fn project_id(&self) -> &str {
         &self.project_id
@@ -98,9 +112,7 @@ impl GcpClient {
             .send()
             .await?;
 
-        debug!("datastore.response.status: {}", res.status());
-
-        let result: datastore::LookupResult = res.json().await?;
+        let result: datastore::LookupResult = decode_response(res, ApiKind::DatastoreLookup).await?;
 
         Ok(result
             .as_option()
@@ -128,10 +140,7 @@ impl GcpClient {
             .send()
             .await?;
 
-        let status = response.status();
-        let body: datastore::BeginTransactionResponse = response.json().await?;
-
-        debug!("beginTransaction: status:{}, body:{:?}", status, body);
+        let body: datastore::BeginTransactionResponse = decode_response(response, ApiKind::BeginTransaction).await?;
 
         Ok(body.transaction)
     }
@@ -182,7 +191,7 @@ impl GcpClient {
             .send()
             .await?;
 
-        let new_token: identity::RefreshTokenResponse = res.json().await?;
+        let new_token: identity::RefreshTokenResponse = decode_response(res, ApiKind::RefreshToken).await?;
 
         token.set_access_token(new_token.access_token);
 
@@ -195,7 +204,7 @@ impl GcpClient {
         token: &UserToken,
         history_id: &str,
     ) -> Result<Vec<gmail::MessageId>, Error> {
-        debug!("Fetching user history list");
+        debug!("Fetching user history list (history_id: {})", history_id);
 
         let res = self
             .http
@@ -205,7 +214,7 @@ impl GcpClient {
             .send()
             .await?;
 
-        let result: gmail::HistoryListResponse = res.json().await?;
+        let result: gmail::HistoryListResponse = decode_response(res, ApiKind::GetHistoryList).await?;
 
         Ok(result
             .history
@@ -267,6 +276,21 @@ impl GcpClient {
         }
 
         Ok(messages)
+    }
+}
+
+async fn decode_response<T: DeserializeOwned>(response: reqwest::Response, api: ApiKind) -> Result<T, Error> {
+    debug!("gcp.response.api: {:?}, status: {}", api, response.status());
+    let status = response.status();
+
+    if status.is_success() {
+        Ok(response.json().await?)
+    } else {
+        let body = response.text().await?;
+
+        Err(Error::UnexpectedStatus {
+            status, body, api
+        })
     }
 }
 
