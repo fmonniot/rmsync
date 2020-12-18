@@ -5,7 +5,7 @@
 
 use bytes::{Buf, Bytes};
 use httparse::{parse_headers, EMPTY_HEADER};
-use log::{debug, error};
+use log::{debug, error, trace};
 use mime::Mime;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::RequestBuilder;
@@ -225,7 +225,7 @@ impl MultipartReader {
         // Let's resume where we left off on the last iteration
         bytes.advance(self.position);
 
-        debug!(
+        trace!(
             "next: self.position: {}; remaining: {}",
             self.position,
             bytes.remaining()
@@ -269,7 +269,7 @@ impl MultipartReader {
             position += 1;
         }
 
-        debug!(
+        trace!(
             "after loop: position: {}; boundary_found: {}; boundary_offset: {}",
             position, boundary_found, boundary_offset
         );

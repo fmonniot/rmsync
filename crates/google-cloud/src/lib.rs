@@ -1,5 +1,5 @@
 use gcp_auth::Token;
-use log::{debug, warn};
+use log::{trace, debug, warn};
 use serde_json::json;
 use serde::de::DeserializeOwned;
 use reqwest::StatusCode;
@@ -175,7 +175,7 @@ impl GcpClient {
         let status = response.status();
         let body = response.text().await?;
 
-        debug!("commit: status:{}, body:|{:?}|", status, body);
+        trace!("commit: status:{}, body:|{:?}|", status, body);
 
         Ok(())
     }
