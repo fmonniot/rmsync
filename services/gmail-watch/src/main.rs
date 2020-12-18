@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::warn;
-use log::{error, info};
+use log::{debug, error, info};
 use regex::Regex;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -81,13 +81,14 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
     };
 
     let mut user_token = tokens::UserToken::from_encrypted_blob(&cfg.crypto, &user.token)?;
+    let history_id = user.history_id().unwrap_or_else(|| notification.history_id);
 
     // Might be skippable within the first hours after login, but otherwise always required
     cfg.gcp.identity_refresh_user_token(&mut user_token).await?;
 
     let history = cfg
         .gcp
-        .gmail_users_history_list(&user_token, &notification.history_id.to_string())
+        .gmail_users_history_list(&user_token, &history_id.to_string())
         .await?;
 
     info!("Will fetch {} emails", history.len());

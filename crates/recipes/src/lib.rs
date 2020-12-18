@@ -45,7 +45,7 @@ pub enum Error {
 // TODO Introduce a gmail::HistoryId(String) and use this one here
 // then have a gmail-watch::pubsub::HistoryId(u32) for the notification part (that's really the only
 // place where a u32 is used)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Copy, Clone)]
 pub struct HistoryId(u32);
 
 impl HistoryId {
@@ -128,6 +128,17 @@ impl DatastoreUser {
 
     pub fn new_history(&mut self, history_id: &HistoryId) {
         self.last_known_history_id.replace(history_id.0);
+    }
+
+    pub fn is_history_more_recent(&self, hid: &HistoryId) -> bool {
+        match self.last_known_history_id {
+            None => true,
+            Some(h) => hid.0 > h
+        }
+    }
+
+    pub fn history_id(&self) -> Option<HistoryId> {
+        self.last_known_history_id.map(HistoryId)
     }
 }
 
