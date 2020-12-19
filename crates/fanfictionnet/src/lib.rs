@@ -3,6 +3,7 @@ use hyper::{body, http::StatusCode, Client};
 use hyper_tls::HttpsConnector;
 use log::{debug, warn};
 use scraper::{ElementRef, Html, Node, Selector};
+use tokio::time::{timeout, Duration};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub struct StoryId(u32);
@@ -46,6 +47,9 @@ const FFN_BASE_URL: &str = "https://www.fanfiction.net";
 pub enum Error {
     #[error("Request to fetch chapter content failed: {0}")]
     Http(#[from] hyper::Error),
+
+    #[error("Fetching the story from ff.net took more than a second")]
+    Timeout(#[from] tokio::time::Elapsed),
 
     #[error("ff.net returned a non 200 response: {0}")]
     InvalidStatusCode(StatusCode),
@@ -114,7 +118,7 @@ pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Ch
         .unwrap();
 
     debug!("fetching story chapter at {}", uri);
-    let mut resp = client.get(uri).await?;
+    let mut resp = timeout(Duration::from_secs(2), client.get(uri)).await??;
 
     if !resp.status().is_success() {
         return Err(Error::InvalidStatusCode(resp.status()));
