@@ -10,6 +10,6 @@ Below is the workflow of the automatic email processor:
 4. If there are any emails from fanfiction.net (or, in the future, other providers) we then retrieve the content and build an _epub_ version of it.
 5. Finally, we upload the file to the remarkable cloud for consumption from the account's tablet.
 
-?> The use of Cloud Run (or Functions) is in the name of cost. `rmsync` has been though with a single user in mind. And even if that user does receive a lot of emails, it's still not enough to justify having a server running all the time :)
+?> The use of Cloud Run (or Functions) is in the name of cost. `rmsync` has been designed with a single user in mind. And even if that user does receive a lot of emails, it's still not enough to justify having a server running all the time :)
 
 !> Do note that we currently do not support multi rmcloud users. This is however a relatively simple change to contributes if someone is interested in.
