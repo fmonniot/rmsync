@@ -1,6 +1,5 @@
 use ego_tree::NodeRef;
-use hyper::{body, http::StatusCode, Client};
-use hyper_tls::HttpsConnector;
+use reqwest::StatusCode;
 use log::{debug, warn};
 use scraper::{ElementRef, Html, Node, Selector};
 use tokio::time::{timeout, Duration};
@@ -46,7 +45,7 @@ const FFN_BASE_URL: &str = "https://www.fanfiction.net";
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Request to fetch chapter content failed: {0}")]
-    Http(#[from] hyper::Error),
+    Http(#[from] reqwest::Error),
 
     #[error("Fetching the story from ff.net took more than a second")]
     Timeout(#[from] tokio::time::Elapsed),
@@ -110,22 +109,18 @@ impl Chapter {
 }
 
 pub async fn fetch_story_chapter(sid: StoryId, chapter: ChapterNum) -> Result<Chapter, Error> {
-    let https = HttpsConnector::new();
-    let client = Client::builder().build::<_, hyper::Body>(https);
+    let client = reqwest::Client::new();
 
-    let uri = format!("{}/s/{}/{}", FFN_BASE_URL, sid.0, chapter.0)
-        .parse()
-        .unwrap();
+    let uri = format!("{}/s/{}/{}", FFN_BASE_URL, sid.0, chapter.0);
 
     debug!("fetching story chapter at {}", uri);
-    let mut resp = timeout(Duration::from_secs(2), client.get(uri)).await??;
+    let resp = timeout(Duration::from_secs(2), client.get(&uri).header("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36").send()).await??;
 
     if !resp.status().is_success() {
         return Err(Error::InvalidStatusCode(resp.status()));
     }
 
-    let bytes = body::to_bytes(resp.body_mut()).await?;
-    let content = String::from_utf8(bytes.to_vec())?;
+    let content = resp.text().await?;
     let chapter = parse_chapter(content, chapter)?;
 
     Ok(chapter)
