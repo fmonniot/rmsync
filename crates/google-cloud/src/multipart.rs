@@ -5,7 +5,7 @@
 
 use bytes::{Buf, Bytes};
 use httparse::{parse_headers, EMPTY_HEADER};
-use log::{debug, error, trace};
+use log::{error, trace};
 use mime::Mime;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::RequestBuilder;
@@ -109,7 +109,7 @@ pub(super) async fn read_response(
 
     let response_body = response.bytes().await?;
 
-    debug!("multipart.response.boundary = {}", boundary);
+    trace!("multipart.response.boundary = {}", boundary);
 
     Ok(read_response_body(&boundary, response_body))
 }
