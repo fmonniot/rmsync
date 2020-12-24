@@ -1,6 +1,6 @@
 use ego_tree::NodeRef;
-use reqwest::StatusCode;
 use log::{debug, warn};
+use reqwest::StatusCode;
 use scraper::{ElementRef, Html, Node, Selector};
 use tokio::time::{timeout, Duration};
 

@@ -73,13 +73,18 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
 
     // Create a distributed lock on the notification email. This is to avoid concurrent processing
     // when receiving a burst of notifications.
-    let lock = cfg.gcp.cloud_storage_new_lock(notification.email_address.clone());
+    let lock = cfg
+        .gcp
+        .cloud_storage_new_lock(notification.email_address.clone());
     let lock_acquired = lock.lock().await?;
 
     if !lock_acquired {
         // After trying for 6 seconds, we couldn't acquire the lock. Let's stop here
-        warn!("Couldn't acquire lock on account {}. Stoping here.", notification.email_address);
-        return Ok(())
+        warn!(
+            "Couldn't acquire lock on account {}. Stoping here.",
+            notification.email_address
+        );
+        return Ok(());
     } else {
         debug!("Lock acquired. Continuing execution.");
     }
@@ -132,11 +137,19 @@ async fn convert(notification: Notification, cfg: Arc<Configuration>) -> Result<
     // Update our database with the current history id, to look up on next invokation
     let new_history_id = &notification.history_id;
     if user.is_history_more_recent(new_history_id) {
-        debug!("User's history_id ({:?}) will be updated to ({:?})", user.history_id(), new_history_id);
+        debug!(
+            "User's history_id ({:?}) will be updated to ({:?})",
+            user.history_id(),
+            new_history_id
+        );
         user.new_history(new_history_id);
         recipes::update_user(&cfg.gcp, &notification.email_address, &user).await?;
     } else {
-        debug!("User's history_id ({:?}) will NOT be updated to ({:?})", user.history_id(), new_history_id);
+        debug!(
+            "User's history_id ({:?}) will NOT be updated to ({:?})",
+            user.history_id(),
+            new_history_id
+        );
     }
 
     if !lock.unlock().await? {

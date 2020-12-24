@@ -1,8 +1,8 @@
 use gcp_auth::Token;
-use log::{trace, debug, warn};
-use serde_json::json;
-use serde::de::DeserializeOwned;
+use log::{debug, trace, warn};
 use reqwest::StatusCode;
+use serde::de::DeserializeOwned;
+use serde_json::json;
 
 pub use crate::tokens::UserToken;
 pub mod datastore;
@@ -118,7 +118,8 @@ impl GcpClient {
             .send()
             .await?;
 
-        let result: datastore::LookupResult = decode_response(res, ApiKind::DatastoreLookup).await?;
+        let result: datastore::LookupResult =
+            decode_response(res, ApiKind::DatastoreLookup).await?;
 
         Ok(result
             .as_option()
@@ -146,7 +147,8 @@ impl GcpClient {
             .send()
             .await?;
 
-        let body: datastore::BeginTransactionResponse = decode_response(response, ApiKind::BeginTransaction).await?;
+        let body: datastore::BeginTransactionResponse =
+            decode_response(response, ApiKind::BeginTransaction).await?;
 
         Ok(body.transaction)
     }
@@ -197,7 +199,8 @@ impl GcpClient {
             .send()
             .await?;
 
-        let new_token: identity::RefreshTokenResponse = decode_response(res, ApiKind::RefreshToken).await?;
+        let new_token: identity::RefreshTokenResponse =
+            decode_response(res, ApiKind::RefreshToken).await?;
 
         token.set_access_token(new_token.access_token);
 
@@ -220,10 +223,14 @@ impl GcpClient {
             .send()
             .await?;
 
-        let result: gmail::HistoryListResponse = decode_response(res, ApiKind::GetHistoryList).await?;
+        let result: gmail::HistoryListResponse =
+            decode_response(res, ApiKind::GetHistoryList).await?;
 
         // Find out if this history id match the one in the notification
-        debug!("gmail.users.history.list return history id: {}", result.history_id);
+        debug!(
+            "gmail.users.history.list return history id: {}",
+            result.history_id
+        );
 
         Ok(result
             .history
@@ -295,10 +302,12 @@ impl GcpClient {
             token: self.token.clone(),
         }
     }
-
 }
 
-async fn decode_response<T: DeserializeOwned>(response: reqwest::Response, api: ApiKind) -> Result<T, Error> {
+async fn decode_response<T: DeserializeOwned>(
+    response: reqwest::Response,
+    api: ApiKind,
+) -> Result<T, Error> {
     debug!("gcp.response.api: {:?}, status: {}", api, response.status());
     let status = response.status();
 
@@ -307,9 +316,7 @@ async fn decode_response<T: DeserializeOwned>(response: reqwest::Response, api: 
     } else {
         let body = response.text().await?;
 
-        Err(Error::UnexpectedStatus {
-            status, body, api
-        })
+        Err(Error::UnexpectedStatus { status, body, api })
     }
 }
 
@@ -336,11 +343,10 @@ pub struct Lock {
     token: Token,
 }
 
-const STORAGE_LOCK_URL: &str   = "https://storage.googleapis.com/upload/storage/v1";
+const STORAGE_LOCK_URL: &str = "https://storage.googleapis.com/upload/storage/v1";
 const STORAGE_UNLOCK_URL: &str = "https://storage.googleapis.com/storage/v1";
 
 impl Lock {
-
     // Currently we use the bucket only for locks, so we have a lifecycle configuration set on any objects age (delete after 1 day)
     // to avoid locking an email ad vitam eternam.
     // If we want to use the bucket for more things, we will need to find an alternative to the lifecycle
@@ -353,12 +359,17 @@ impl Lock {
         // query explanation
         // media - Simple upload. Upload the object data only, without any metadata.
         // Makes the operation conditional on whether the object's current generation matches the given value. Setting to 0 makes the operation succeed only if there are no live versions of the object.
-        let req = self.client
+        let req = self
+            .client
             .post(&url)
-            .query(&[("name", self.object.as_str()), ("uploadType", "media"), ("ifGenerationMatch", "0")])
+            .query(&[
+                ("name", self.object.as_str()),
+                ("uploadType", "media"),
+                ("ifGenerationMatch", "0"),
+            ])
             .header("content-type", "text/plain")
             .body("1");
-        
+
         let acquired = self.send(req, ApiKind::StorageCreate).await?;
 
         Ok(acquired)
@@ -366,7 +377,6 @@ impl Lock {
 
     // https://cloud.google.com/storage/docs/json_api/v1/objects/delete
     pub async fn unlock(&self) -> Result<bool, Error> {
-
         let object = urlencoding::encode(&self.object);
         let url = format!("{}/b/{}/o/{}", STORAGE_UNLOCK_URL, self.bucket, object);
 
@@ -392,10 +402,10 @@ impl Lock {
 
             // Only log body on non-expected status code
             match status {
-                StatusCode::OK => return Ok(true), // lock created
+                StatusCode::OK => return Ok(true),         // lock created
                 StatusCode::NO_CONTENT => return Ok(true), // lock deleted
                 StatusCode::NOT_FOUND => return Ok(false), // no lock to delete
-                StatusCode::PRECONDITION_FAILED => (), // lock created by another
+                StatusCode::PRECONDITION_FAILED => (),     // lock created by another
                 _ => {
                     let body = response.text().await?;
                     debug!("gcp.lock.body: {}", body.replace('\n', ""));

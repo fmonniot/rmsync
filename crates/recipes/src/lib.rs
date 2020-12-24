@@ -133,7 +133,7 @@ impl DatastoreUser {
     pub fn is_history_more_recent(&self, hid: &HistoryId) -> bool {
         match self.last_known_history_id {
             None => true,
-            Some(h) => hid.0 > h
+            Some(h) => hid.0 > h,
         }
     }
 

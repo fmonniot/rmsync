@@ -271,7 +271,9 @@ impl MultipartReader {
 
         trace!(
             "after loop: position: {}; boundary_found: {}; boundary_offset: {}",
-            position, boundary_found, boundary_offset
+            position,
+            boundary_found,
+            boundary_offset
         );
 
         if boundary_found {
